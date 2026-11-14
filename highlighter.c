@@ -483,7 +483,7 @@ static void UpdateValueLabel(int id) {
 static void SliderRow(LPCWSTR text, int id, int y) {
     const SliderDef *d = FindSlider(id);
     Label(text, y);
-    HWND t = Mk(TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | TBS_BOTH | WS_TABSTOP, 0, CTL_X - 6, y, 210, 28, id);
+    HWND t = Mk(L"WHSlider", L"", WS_TABSTOP, 0, CTL_X - 6, y, 210, 28, id);
     SendMessageW(t, TBM_SETRANGE, TRUE, MAKELPARAM(d->lo, d->hi));
     Mk(L"STATIC", L"", SS_RIGHT | SS_CENTERIMAGE, 0, CTL_X + 210, y, 68, 28, id + 100);
 }
@@ -652,6 +652,135 @@ static LRESULT CALLBACK PrevProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_ERASEBKGND: return 1;
     case WM_SETCURSOR: SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_HAND)); return TRUE;
     case WM_LBUTTONDOWN: if (hDlg) ShowHighlight(hDlg, &cfg); return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+
+// ---- custom slider (replaces the stock trackbar so it looks right in both themes)
+// Understands TBM_SETRANGE / TBM_SETPOS / TBM_GETPOS and notifies the parent with WM_HSCROLL.
+typedef struct { int lo, hi, pos, hover, drag; } SliderState;
+
+static float Cov(float d) { return Sat(.5f - d); }
+static DWORD Mix(DWORD bg, COLORREF c, float a) {
+    int br = (bg >> 16) & 255, bgc = (bg >> 8) & 255, bb = bg & 255;
+    int r = (int)(br + (GetRValue(c) - br) * a + .5f), g = (int)(bgc + (GetGValue(c) - bgc) * a + .5f),
+        b = (int)(bb + (GetBValue(c) - bb) * a + .5f);
+    return (r << 16) | (g << 8) | b;
+}
+
+static void SliderGeom(HWND h, float *x0, float *x1) {
+    RECT rc; GetClientRect(h, &rc);
+    float m = 11 * g_dpi / 96.f;
+    *x0 = m; *x1 = rc.right - m;
+}
+
+static float SliderThumbX(HWND h, const SliderState *s) {
+    float x0, x1; SliderGeom(h, &x0, &x1);
+    return x0 + (x1 - x0) * (s->hi > s->lo ? (float)(s->pos - s->lo) / (s->hi - s->lo) : 0.f);
+}
+
+static void PaintSlider(HWND h, HDC dc, const SliderState *st) {
+    RECT rc; GetClientRect(h, &rc);
+    int w = rc.right, hh = rc.bottom;
+    void *bits = NULL;
+    HDC mem = CreateCompatibleDC(dc);
+    HBITMAP bmp = NewDIB(dc, w, hh, &bits);
+    if (!bmp || !bits) { if (bmp) DeleteObject(bmp); DeleteDC(mem); return; }
+    HGDIOBJ old = SelectObject(mem, bmp);
+
+    float k = g_dpi / 96.f, R = 9 * k, th = 4 * k, cy = hh * .5f;
+    float rin = (st->drag ? 4.f : st->hover ? 6.5f : 5.f) * k;
+    float x0, x1; SliderGeom(h, &x0, &x1);
+    float tx = SliderThumbX(h, st);
+    COLORREF bgc = C_BG(), accent = C_ACCENT();
+    COLORREF track = g_dark ? RGB(118, 118, 118) : RGB(160, 160, 160);
+    COLORREF outer = g_dark ? RGB(66, 66, 66) : RGB(255, 255, 255);
+    COLORREF ring = g_dark ? RGB(104, 104, 104) : RGB(188, 188, 188);
+    DWORD bg = (GetRValue(bgc) << 16) | (GetGValue(bgc) << 8) | GetBValue(bgc);
+    int focus = GetFocus() == h;
+    DWORD *px = bits;
+
+    for (int y = 0; y < hh; y++) {
+        float py = y + .5f;
+        for (int x = 0; x < w; x++) {
+            float pxx = x + .5f;
+            float dxs = pxx < x0 ? x0 - pxx : pxx > x1 ? pxx - x1 : 0.f;
+            float d = sqrtf(dxs * dxs + (py - cy) * (py - cy)) - th * .5f;
+            DWORD c = bg;
+            c = Mix(c, track, Cov(d));
+            if (pxx < tx) c = Mix(c, accent, Cov(d));
+            float dist = sqrtf((pxx - tx) * (pxx - tx) + (py - cy) * (py - cy));
+            c = Mix(c, ring, Cov(dist - R));
+            c = Mix(c, outer, Cov(dist - (R - k)));
+            c = Mix(c, accent, Cov(dist - rin));
+            if (focus) c = Mix(c, accent, Cov(fabsf(dist - (R + 3 * k)) - .75f * k));
+            px[y * w + x] = c;
+        }
+    }
+    BitBlt(dc, 0, 0, w, hh, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem);
+}
+
+static void SliderSet(HWND h, SliderState *s, int pos, int notify) {
+    pos = Clampi(pos, s->lo, s->hi);
+    if (pos == s->pos) return;
+    s->pos = pos;
+    InvalidateRect(h, NULL, FALSE);
+    if (notify) SendMessageW(GetParent(h), WM_HSCROLL, MAKEWPARAM(SB_THUMBTRACK, pos), (LPARAM)h);
+}
+
+static void SliderFromMouse(HWND h, SliderState *s, int mx) {
+    float x0, x1; SliderGeom(h, &x0, &x1);
+    float f = Sat((mx - x0) / (x1 - x0));
+    SliderSet(h, s, s->lo + (int)(f * (s->hi - s->lo) + .5f), 1);
+}
+
+static LRESULT CALLBACK SliderProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    SliderState *s = (SliderState *)GetWindowLongPtrW(h, GWLP_USERDATA);
+    switch (m) {
+    case WM_NCCREATE:
+        SetWindowLongPtrW(h, GWLP_USERDATA, (LONG_PTR)LocalAlloc(LPTR, sizeof(SliderState)));
+        break;
+    case WM_NCDESTROY:
+        LocalFree(s);
+        break;
+    case TBM_SETRANGE: s->lo = LOWORD(l); s->hi = HIWORD(l); s->pos = Clampi(s->pos, s->lo, s->hi); return 0;
+    case TBM_SETPOS: s->pos = Clampi((int)l, s->lo, s->hi); InvalidateRect(h, NULL, FALSE); return 0;
+    case TBM_GETPOS: return s->pos;
+    case WM_GETDLGCODE: return DLGC_WANTARROWS;
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); PaintSlider(h, dc, s); EndPaint(h, &ps); return 0; }
+    case WM_SETFOCUS: case WM_KILLFOCUS: InvalidateRect(h, NULL, FALSE); return 0;
+    case WM_LBUTTONDOWN:
+        SetFocus(h); SetCapture(h); s->drag = 1;
+        SliderFromMouse(h, s, (short)LOWORD(l));
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+    case WM_MOUSEMOVE:
+        if (!s->hover) {
+            TRACKMOUSEEVENT t = { sizeof t, TME_LEAVE, h, 0 };
+            TrackMouseEvent(&t);
+            s->hover = 1; InvalidateRect(h, NULL, FALSE);
+        }
+        if (s->drag) SliderFromMouse(h, s, (short)LOWORD(l));
+        return 0;
+    case WM_MOUSELEAVE: s->hover = 0; InvalidateRect(h, NULL, FALSE); return 0;
+    case WM_LBUTTONUP:
+    case WM_CAPTURECHANGED:
+        if (s->drag) { s->drag = 0; if (GetCapture() == h) ReleaseCapture(); InvalidateRect(h, NULL, FALSE); }
+        return 0;
+    case WM_KEYDOWN: {
+        int span = s->hi - s->lo, step = span >= 50 ? span / 20 : 1;
+        switch (w) {
+        case VK_LEFT: case VK_DOWN: SliderSet(h, s, s->pos - 1, 1); return 0;
+        case VK_RIGHT: case VK_UP: SliderSet(h, s, s->pos + 1, 1); return 0;
+        case VK_PRIOR: SliderSet(h, s, s->pos + step, 1); return 0;
+        case VK_NEXT: SliderSet(h, s, s->pos - step, 1); return 0;
+        case VK_HOME: SliderSet(h, s, s->lo, 1); return 0;
+        case VK_END: SliderSet(h, s, s->hi, 1); return 0;
+        }
+        break;
+    }
     }
     return DefWindowProcW(h, m, w, l);
 }
@@ -861,6 +990,8 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmd, int show) {
     RegisterClassW(&wc);
 
     wc.lpfnWndProc = PrevProc; wc.lpszClassName = L"WHPreview"; wc.hIcon = NULL;
+    RegisterClassW(&wc);
+    wc.lpfnWndProc = SliderProc; wc.lpszClassName = L"WHSlider";
     RegisterClassW(&wc);
 
     hMain = CreateWindowExW(0, MAIN_CLASS, APP_NAME, WS_POPUP, 0, 0, 0, 0, NULL, NULL, hi, NULL);
