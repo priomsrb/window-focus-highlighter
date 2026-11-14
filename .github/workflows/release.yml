@@ -1,0 +1,33 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches version.h
+        shell: bash
+        run: |
+          ver=$(sed -n 's/.*APP_VER_STR "\(.*\)".*/\1/p' version.h)
+          [ "v$ver" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != version.h $ver"; exit 1; }
+      - name: Build
+        shell: cmd
+        run: |
+          set PATH=C:\mingw64\bin;%PATH%
+          call build.bat
+      - name: Package
+        shell: bash
+        run: |
+          mkdir dist
+          cp WindowFocusHighlighter.exe dist/
+          7z a dist/WindowFocusHighlighter-$GITHUB_REF_NAME.zip WindowFocusHighlighter.exe LICENSE README.md
+          cd dist && sha256sum * > SHA256SUMS.txt
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes

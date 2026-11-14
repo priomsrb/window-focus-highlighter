@@ -16,6 +16,7 @@
 #include <uxtheme.h>
 #include <math.h>
 #include <wchar.h>
+#include "version.h"
 
 enum { MODE_BORDER, MODE_TINT, MODE_BOTH };
 
@@ -1253,6 +1254,7 @@ static void TrayMenu(void) {
     AppendMenuW(m, MF_STRING, IDM_SETTINGS, L"Settings...");
     AppendMenuW(m, MF_STRING | (IsStartup() ? MF_CHECKED : 0), IDM_STARTUP, L"Start with Windows");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Version " APP_VER_STR);
     AppendMenuW(m, MF_STRING, IDM_EXIT, L"Exit");
     SetMenuDefaultItem(m, IDM_SETTINGS, FALSE);
     POINT p; GetCursorPos(&p);
