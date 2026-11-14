@@ -9,7 +9,7 @@ About 50 KB, plain C with the Win32 API, no runtime or installer, and no polling
 
 ![A border flashes around Notepad when it gains focus, then fades out](images/demo.gif)
 
-## Demo
+## Demo Video
 
 [![Watch the demo video on YouTube](https://img.youtube.com/vi/kePUhT7NUY8/maxresdefault.jpg)](https://www.youtube.com/watch?v=kePUhT7NUY8)
 
