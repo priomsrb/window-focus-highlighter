@@ -1345,6 +1345,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmd, int show) {
     RegisterHotkey();
     HWINEVENTHOOK hook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, WinEvt, 0, 0,
                                          WINEVENT_OUTOFCONTEXT);
+    if (first) PostMessageW(hMain, WM_OPEN, 0, 0);   // first run: show settings so the user knows it started
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         if (hDlg && IsDialogMessageW(hDlg, &msg)) continue;
