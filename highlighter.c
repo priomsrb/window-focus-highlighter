@@ -144,8 +144,9 @@ static float Sat(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 // Fills premultiplied ARGB pixels: rounded-rect border band and/or interior tint.
 // `outside`: border band lies outside the window, so it fades toward its outer edge (a glow);
 // otherwise it fades toward the window interior.
-static void Render(DWORD *px, int w, int h, const Config *c, float r, int outside) {
-    float t = (float)c->thickness;
+// `thick` is the band thickness in px (may exceed c->thickness to overlap the window's own edge).
+static void Render(DWORD *px, int w, int h, const Config *c, float r, int outside, int thick) {
+    float t = (float)thick;
     float Ab = (c->mode == MODE_TINT ? c->tintOpacity : c->opacity) / 100.f;
     float At = c->mode == MODE_BORDER ? 0.f : c->tintOpacity / 100.f;
     int cr = GetRValue(c->color), cg = GetGValue(c->color), cb = GetBValue(c->color);
@@ -228,6 +229,8 @@ static void ShowHighlight(HWND target, const Config *c) {
     int full = IsZoomed(target) || (r.left <= mi.rcMonitor.left && r.top <= mi.rcMonitor.top &&
                                     r.right >= mi.rcMonitor.right && r.bottom >= mi.rcMonitor.bottom);
     int pad = (full || c->mode == MODE_TINT) ? 0 : c->thickness;
+    // DWM draws a ~1px border line at the window edge; overlap it so no sliver shows between border and window.
+    int ov = pad ? MulDiv(2, GetDpiForWindow(target), 96) : 0;
     int w = ww + 2 * pad, h = wh + 2 * pad;
 
     BITMAPINFO bi = {0};
@@ -243,7 +246,7 @@ static void ShowHighlight(HWND target, const Config *c) {
     g_old = SelectObject(g_mem, g_bmp);
 
     float radius = full ? 0.f : (float)(WindowRadius(target) + pad);
-    Render((DWORD *)bits, w, h, c, radius, pad > 0);
+    Render((DWORD *)bits, w, h, c, radius, pad > 0, c->thickness + ov);
 
     g_hold = c->holdMs; g_fade = c->fadeMs;
     SetWindowPos(hOverlay, HWND_TOPMOST, r.left - pad, r.top - pad, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -323,7 +326,7 @@ static HICON MakeIcon(void) {
     Config t; Defaults(&t);
     t.mode = MODE_BORDER; t.opacity = 100; t.thickness = s / 8 > 2 ? s / 8 : 2;
     t.softness = 0;
-    Render((DWORD *)bits, s, s, &t, s / 5.f, 0);
+    Render((DWORD *)bits, s, s, &t, s / 5.f, 0, t.thickness);
     DWORD *p = bits;                       // icons want straight (non-premultiplied) alpha
     for (int i = 0; i < s * s; i++) {
         DWORD a = p[i] >> 24;
