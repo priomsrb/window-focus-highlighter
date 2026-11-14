@@ -23,7 +23,7 @@ typedef struct {
     int enabled, mode, opacity, tintOpacity, thickness, softness, holdMs, fadeMs;
     COLORREF color;
     WORD hotkey;            // HKM_* format: LOBYTE = vk, HIBYTE = HOTKEYF_* flags
-    WCHAR ignore[256];      // ';' separated exe names
+    WCHAR ignore[1024];     // ';' separated exe names
 } Config;
 
 #define APP_NAME   L"Window Highlighter"
@@ -33,7 +33,7 @@ typedef struct {
 
 enum { T_DEBOUNCE = 1, T_HOLD, T_FADE };
 enum { IDM_ENABLE = 1, IDM_SETTINGS, IDM_STARTUP, IDM_EXIT };
-enum { IDC_ENABLE = 101, IDC_MODE, IDC_SWATCH, IDC_PICK, IDC_HOTKEY, IDC_HKCLEAR, IDC_IGNORE, IDC_STARTUP, IDC_PBOX,
+enum { IDC_ENABLE = 101, IDC_MODE, IDC_SWATCH, IDC_PICK, IDC_HOTKEY, IDC_HKCLEAR, IDC_IGNORE, IDC_STARTUP, IDC_PBOX, IDC_ADDPROG, IDC_ADDOPEN,
        IDC_OPACITY = 110, IDC_TINT, IDC_THICK, IDC_SOFT, IDC_HOLD, IDC_FADE };   // slider value labels use id + 100
 
 static HINSTANCE hInst;
@@ -100,7 +100,7 @@ static void LoadConfig(void) {
     GetPrivateProfileStringW(L"Highlight", L"Color", L"3399FF", b, 32, iniPath);
     DWORD v = wcstoul(b, NULL, 16);
     cfg.color = RGB((v >> 16) & 255, (v >> 8) & 255, v & 255);
-    GetPrivateProfileStringW(L"Highlight", L"Ignore", L"", cfg.ignore, 256, iniPath);
+    GetPrivateProfileStringW(L"Highlight", L"Ignore", L"", cfg.ignore, 1024, iniPath);
     Sanitize(&cfg);
 }
 
@@ -272,16 +272,24 @@ static const WCHAR *const kIgnoredClasses[] = {
     L"Progman", L"WorkerW", NULL
 };
 
-static int IgnoredProcess(HWND h) {
-    if (!cfg.ignore[0]) return 0;
+// Exe file name (no path) of the process that owns window h.
+static int ProcBase(HWND h, WCHAR *out, int n) {
     DWORD pid; GetWindowThreadProcessId(h, &pid);
     HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!p) return 0;
-    WCHAR path[MAX_PATH]; DWORD n = MAX_PATH;
-    BOOL ok = QueryFullProcessImageNameW(p, 0, path, &n);
+    WCHAR path[MAX_PATH]; DWORD len = MAX_PATH;
+    BOOL ok = QueryFullProcessImageNameW(p, 0, path, &len);
     CloseHandle(p);
     if (!ok) return 0;
     WCHAR *base = wcsrchr(path, L'\\'); base = base ? base + 1 : path;
+    lstrcpynW(out, base, n);
+    return 1;
+}
+
+static int IgnoredProcess(HWND h) {
+    if (!cfg.ignore[0]) return 0;
+    WCHAR base[MAX_PATH];
+    if (!ProcBase(h, base, MAX_PATH)) return 0;
     size_t bl = wcslen(base);
     for (const WCHAR *s = cfg.ignore; *s;) {
         while (*s == L';' || *s == L' ') s++;
@@ -410,9 +418,10 @@ static BOOL CALLBACK ThemeChild(HWND c, LPARAM l) {
     WCHAR cls[32];
     GetClassNameW(c, cls, 32);
     int btn = !lstrcmpiW(cls, L"Button"), trk = !lstrcmpiW(cls, TRACKBAR_CLASSW);
+    int lst = !lstrcmpiW(cls, L"ListBox");
     int edt = !lstrcmpiW(cls, L"Edit") || !lstrcmpiW(cls, L"ComboBox") || !lstrcmpiW(cls, HOTKEY_CLASSW);
-    if (btn || trk || edt)
-        SetWindowTheme(c, g_dark ? ((btn || trk) ? L"DarkMode_Explorer" : L"DarkMode_CFD") : NULL, NULL);
+    if (btn || trk || edt || lst)
+        SetWindowTheme(c, g_dark ? ((btn || trk || lst) ? L"DarkMode_Explorer" : L"DarkMode_CFD") : NULL, NULL);
     return TRUE;
 }
 
@@ -490,6 +499,34 @@ static void SliderRow(LPCWSTR text, int id, int y) {
 
 static BOOL CALLBACK SetFont(HWND h, LPARAM f) { SendMessageW(h, WM_SETFONT, f, TRUE); return TRUE; }
 
+// The ignore list lives in the listbox; cfg.ignore is its ';' separated form.
+static void GetIgnoreString(WCHAR *out) {
+    int n = (int)SendDlgItemMessageW(hDlg, IDC_IGNORE, LB_GETCOUNT, 0, 0);
+    out[0] = 0;
+    for (int i = 0; i < n; i++) {
+        WCHAR b[MAX_PATH];
+        if (SendDlgItemMessageW(hDlg, IDC_IGNORE, LB_GETTEXT, i, (LPARAM)b) <= 0) continue;
+        if (out[0]) lstrcatW(out, L";");
+        lstrcatW(out, b);
+    }
+}
+
+static void FillIgnoreList(const WCHAR *list) {
+    SendDlgItemMessageW(hDlg, IDC_IGNORE, LB_RESETCONTENT, 0, 0);
+    for (const WCHAR *s = list; *s;) {
+        while (*s == L';' || *s == L' ') s++;
+        const WCHAR *st = s;
+        while (*s && *s != L';') s++;
+        const WCHAR *e = s;
+        while (e > st && e[-1] == L' ') e--;
+        if (e > st && e - st < MAX_PATH) {
+            WCHAR b[MAX_PATH];
+            lstrcpynW(b, st, (int)(e - st) + 1);
+            SendDlgItemMessageW(hDlg, IDC_IGNORE, LB_ADDSTRING, 0, (LPARAM)b);
+        }
+    }
+}
+
 static void ReadDialog(Config *c) {
     c->enabled = IsDlgButtonChecked(hDlg, IDC_ENABLE) == BST_CHECKED;
     c->mode = (int)SendDlgItemMessageW(hDlg, IDC_MODE, CB_GETCURSEL, 0, 0);
@@ -498,7 +535,7 @@ static void ReadDialog(Config *c) {
     c->thickness = SliderVal(IDC_THICK); c->softness = SliderVal(IDC_SOFT);
     c->holdMs = SliderVal(IDC_HOLD); c->fadeMs = SliderVal(IDC_FADE);
     c->hotkey = LOWORD(SendDlgItemMessageW(hDlg, IDC_HOTKEY, HKM_GETHOTKEY, 0, 0));
-    GetDlgItemTextW(hDlg, IDC_IGNORE, c->ignore, 256);
+    GetIgnoreString(c->ignore);
     Sanitize(c);
 }
 
@@ -517,7 +554,7 @@ static void PutDialog(const Config *c) {
     SetSliderVal(IDC_THICK, c->thickness); SetSliderVal(IDC_SOFT, c->softness);
     SetSliderVal(IDC_HOLD, c->holdMs); SetSliderVal(IDC_FADE, c->fadeMs);
     SendDlgItemMessageW(hDlg, IDC_HOTKEY, HKM_SETHOTKEY, c->hotkey, 0);
-    SetDlgItemTextW(hDlg, IDC_IGNORE, c->ignore);
+    FillIgnoreList(c->ignore);
     CheckDlgButton(hDlg, IDC_STARTUP, IsStartup() ? BST_CHECKED : BST_UNCHECKED);
     InvalidateRect(hSwatch, NULL, TRUE);
     g_loading = 0;
@@ -849,6 +886,130 @@ static LRESULT CALLBACK SliderProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 
+// ---- ignore list: owner-drawn list with per-row remove, Add (file picker) and Add open program (menu)
+static void IgnoreChanged(void) { LiveApply(); }
+
+static int IgnoreIndexOf(const WCHAR *name) {
+    int n = (int)SendDlgItemMessageW(hDlg, IDC_IGNORE, LB_GETCOUNT, 0, 0);
+    for (int i = 0; i < n; i++) {
+        WCHAR b[MAX_PATH];
+        if (SendDlgItemMessageW(hDlg, IDC_IGNORE, LB_GETTEXT, i, (LPARAM)b) > 0 && !lstrcmpiW(b, name)) return i;
+    }
+    return -1;
+}
+
+static void AddIgnore(const WCHAR *name) {
+    if (!*name || IgnoreIndexOf(name) >= 0) return;
+    WCHAR all[1024];
+    GetIgnoreString(all);
+    if (lstrlenW(all) + lstrlenW(name) + 2 >= 1000) return;
+    int i = (int)SendDlgItemMessageW(hDlg, IDC_IGNORE, LB_ADDSTRING, 0, (LPARAM)name);
+    SendDlgItemMessageW(hDlg, IDC_IGNORE, LB_SETCURSEL, i, 0);
+    IgnoreChanged();
+}
+
+static void RemoveIgnore(int i) {
+    if (i < 0) return;
+    SendDlgItemMessageW(hDlg, IDC_IGNORE, LB_DELETESTRING, i, 0);
+    IgnoreChanged();
+}
+
+static LRESULT CALLBACK IgnoreListSub(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR ref) {
+    if (m == WM_LBUTTONDOWN) {
+        RECT rc; GetClientRect(h, &rc);
+        LRESULT r = SendMessageW(h, LB_ITEMFROMPOINT, 0, l);
+        int idx = LOWORD(r);
+        if (!HIWORD(r) && (short)LOWORD(l) > rc.right - S(36)) { RemoveIgnore(idx); return 0; }
+    } else if (m == WM_KEYDOWN && w == VK_DELETE) {
+        RemoveIgnore((int)SendMessageW(h, LB_GETCURSEL, 0, 0));
+        return 0;
+    }
+    return DefSubclassProc(h, m, w, l);
+}
+
+static void DrawIgnoreItem(const DRAWITEMSTRUCT *di) {
+    if (di->itemID == (UINT)-1) return;
+    HDC dc = di->hDC; RECT rc = di->rcItem;
+    WCHAR name[MAX_PATH];
+    if (SendMessageW(di->hwndItem, LB_GETTEXT, di->itemID, (LPARAM)name) <= 0) return;
+    int sel = (di->itemState & ODS_SELECTED) != 0;
+    HBRUSH bg = CreateSolidBrush(sel ? C_SEL() : C_EDIT());
+    FillRect(dc, &rc, bg); DeleteObject(bg);
+    HBRUSH ln = CreateSolidBrush(g_dark ? RGB(58, 58, 58) : RGB(228, 228, 228));
+    RECT sep = { rc.left, rc.bottom - 1, rc.right, rc.bottom };
+    FillRect(dc, &sep, ln); DeleteObject(ln);
+
+    int cy = (rc.top + rc.bottom) / 2, bs = S(20);
+    RECT badge = { rc.left + S(10), cy - bs / 2, rc.left + S(10) + bs, cy + bs / 2 };
+    HBRUSH bb = CreateSolidBrush(g_dark ? RGB(52, 70, 86) : RGB(222, 235, 248));
+    HGDIOBJ ob = SelectObject(dc, bb), op = SelectObject(dc, GetStockObject(NULL_PEN));
+    RoundRect(dc, badge.left, badge.top, badge.right + 1, badge.bottom + 1, S(6), S(6));
+    SelectObject(dc, ob); SelectObject(dc, op); DeleteObject(bb);
+
+    HGDIOBJ of = SelectObject(dc, g_font);
+    SetBkMode(dc, TRANSPARENT);
+    WCHAR ch[2] = { name[0] >= L'a' && name[0] <= L'z' ? name[0] - 32 : name[0], 0 };
+    SetTextColor(dc, C_ACCENT());
+    DrawTextW(dc, ch, 1, &badge, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SetTextColor(dc, C_TEXT());
+    RECT tr = { rc.left + S(40), rc.top, rc.right - S(40), rc.bottom };
+    DrawTextW(dc, name, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    SelectObject(dc, of);
+
+    int xr = rc.right - S(20), g = S(4);          // remove glyph
+    HPEN gp = CreatePen(PS_SOLID, g_dpi >= 144 ? 2 : 1, C_MUTED());
+    op = SelectObject(dc, gp);
+    MoveToEx(dc, xr - g, cy - g, NULL); LineTo(dc, xr + g + 1, cy + g + 1);
+    MoveToEx(dc, xr + g, cy - g, NULL); LineTo(dc, xr - g - 1, cy + g + 1);
+    SelectObject(dc, op); DeleteObject(gp);
+}
+
+static void AddIgnoreFromFile(void) {
+    WCHAR path[MAX_PATH] = L"", title[MAX_PATH] = L"";
+    OPENFILENAMEW ofn = { sizeof ofn };
+    ofn.hwndOwner = hDlg;
+    ofn.lpstrFilter = L"Programs (*.exe)\0*.exe\0All files\0*.*\0";
+    ofn.lpstrFile = path; ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFileTitle = title; ofn.nMaxFileTitle = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetOpenFileNameW(&ofn)) AddIgnore(title);
+}
+
+#define OPEN_MENU_BASE 5000
+#define OPEN_MAX 40
+static WCHAR g_openExe[OPEN_MAX][64];
+static int g_nOpen;
+
+static BOOL CALLBACK EnumOpen(HWND w, LPARAM l) {
+    WCHAR title[64], exe[64];
+    if (g_nOpen >= OPEN_MAX || !IsWindowVisible(w) || GetWindow(w, GW_OWNER) ||
+        (GetWindowLongW(w, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) || !GetWindowTextW(w, title, 64)) return TRUE;
+    DWORD cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof cloaked)) && cloaked) return TRUE;
+    DWORD pid; GetWindowThreadProcessId(w, &pid);
+    if (pid == GetCurrentProcessId() || !ProcBase(w, exe, 64)) return TRUE;
+    if (IgnoreIndexOf(exe) >= 0) return TRUE;
+    for (int i = 0; i < g_nOpen; i++) if (!lstrcmpiW(g_openExe[i], exe)) return TRUE;
+    lstrcpyW(g_openExe[g_nOpen], exe);
+    HMENU m = (HMENU)l;
+    WCHAR label[160];
+    wsprintfW(label, L"%s   -   %s", exe, title);
+    AppendMenuW(m, MF_STRING, OPEN_MENU_BASE + g_nOpen, label);
+    g_nOpen++;
+    return TRUE;
+}
+
+static void AddIgnoreFromOpen(HWND btn) {
+    HMENU m = CreatePopupMenu();
+    g_nOpen = 0;
+    EnumWindows(EnumOpen, (LPARAM)m);
+    if (!g_nOpen) AppendMenuW(m, MF_STRING | MF_GRAYED, 1, L"No other open programs");
+    RECT rc; GetWindowRect(btn, &rc);
+    int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0, hDlg, NULL);
+    DestroyMenu(m);
+    if (cmd >= OPEN_MENU_BASE && cmd < OPEN_MENU_BASE + g_nOpen) AddIgnore(g_openExe[cmd - OPEN_MENU_BASE]);
+}
+
 static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_CREATE: {
@@ -884,9 +1045,13 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         Mk(L"BUTTON", L"Clear", BS_PUSHBUTTON | WS_TABSTOP, 0, CTL_X + 160, y + 1, 56, 26, IDC_HKCLEAR);
 
         creatingPage = PG_IGNORE; y = y0;
-        Mk(L"STATIC", L"Windows from these programs are never highlighted. Enter exe names separated by semicolons, "
-                      L"for example notepad.exe; chrome.exe", SS_LEFT, 0, CX, y, 400, 40, -1); y += 48;
-        Mk(L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE, CX, y, 400, 26, IDC_IGNORE);
+        Mk(L"STATIC", L"Windows from these programs are never highlighted.", SS_LEFT, 0, CX, y, 400, 22, -1); y += 28;
+        Mk(L"BUTTON", L"Add program...", BS_PUSHBUTTON | WS_TABSTOP, 0, CX, y, 120, 28, IDC_ADDPROG);
+        Mk(L"BUTTON", L"Add open program...", BS_PUSHBUTTON | WS_TABSTOP, 0, CX + 128, y, 150, 28, IDC_ADDOPEN); y += 38;
+        HWND lb = Mk(L"LISTBOX", L"", LBS_OWNERDRAWFIXED | LBS_NOTIFY | LBS_HASSTRINGS | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
+                     0, CX, y, 400, CLIENT_H - y - 16, IDC_IGNORE);
+        SendMessageW(lb, LB_SETITEMHEIGHT, 0, S(32));
+        SetWindowSubclass(lb, IgnoreListSub, 1, 0);
         creatingPage = -1;
 
         g_font = CreateFontW(-MulDiv(9, g_dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
@@ -903,6 +1068,9 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                      ww, wh, SWP_NOZORDER);
         return 0;
     }
+    case WM_DRAWITEM:
+        if (w == IDC_IGNORE) { DrawIgnoreItem((const DRAWITEMSTRUCT *)l); return TRUE; }
+        break;
     case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); PaintSidebar(dc); EndPaint(h, &ps); return 0; }
     case WM_LBUTTONDOWN: {
         int x = (short)LOWORD(l), y = (short)HIWORD(l);
@@ -948,9 +1116,11 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case IDC_MODE:
             if (HIWORD(w) == CBN_SELCHANGE) { LiveApply(); ApplyLayout(); }
             return 0;
-        case IDC_HOTKEY: case IDC_IGNORE:
+        case IDC_HOTKEY:
             if (HIWORD(w) == EN_CHANGE) LiveApply();
             return 0;
+        case IDC_ADDPROG: AddIgnoreFromFile(); return 0;
+        case IDC_ADDOPEN: AddIgnoreFromOpen((HWND)l); return 0;
         case IDCANCEL: DestroyWindow(h); return 0;
         }
         break;
