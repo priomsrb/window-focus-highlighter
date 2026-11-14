@@ -192,9 +192,18 @@ static void ShowHighlight(HWND target, const Config *c) {
     RECT r;
     if (FAILED(DwmGetWindowAttribute(target, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof r)))
         GetWindowRect(target, &r);
-    int w = r.right - r.left, h = r.bottom - r.top;
-    if (w < 8 || h < 8) return;
+    int ww = r.right - r.left, wh = r.bottom - r.top;
+    if (ww < 8 || wh < 8) return;
     HideOverlay();
+
+    // Windowed: the border sits outside the window edge (overlay grows by `pad`).
+    // Maximized / full screen: no room outside, so the border stays inside.
+    MONITORINFO mi = { sizeof mi };
+    GetMonitorInfoW(MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST), &mi);
+    int full = IsZoomed(target) || (r.left <= mi.rcMonitor.left && r.top <= mi.rcMonitor.top &&
+                                    r.right >= mi.rcMonitor.right && r.bottom >= mi.rcMonitor.bottom);
+    int pad = (full || c->mode == MODE_TINT) ? 0 : c->thickness;
+    int w = ww + 2 * pad, h = wh + 2 * pad;
 
     BITMAPINFO bi = {0};
     bi.bmiHeader.biSize = sizeof bi.bmiHeader;
@@ -208,12 +217,12 @@ static void ShowHighlight(HWND target, const Config *c) {
     if (!g_bmp || !bits) { if (g_bmp) DeleteObject(g_bmp); DeleteDC(g_mem); g_mem = NULL; g_bmp = NULL; return; }
     g_old = SelectObject(g_mem, g_bmp);
 
-    float radius = IsZoomed(target) ? 0.f : (float)c->radius;
+    float radius = full ? 0.f : (float)(c->radius + pad);
     Render((DWORD *)bits, w, h, c, radius);
 
     g_hold = c->holdMs; g_fade = c->fadeMs;
-    SetWindowPos(hOverlay, HWND_TOPMOST, r.left, r.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    POINT dst = { r.left, r.top }, src = {0, 0};
+    SetWindowPos(hOverlay, HWND_TOPMOST, r.left - pad, r.top - pad, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    POINT dst = { r.left - pad, r.top - pad }, src = {0, 0};
     SIZE sz = { w, h };
     BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
     UpdateLayeredWindow(hOverlay, NULL, &dst, &sz, g_mem, &src, 0, &bf, ULW_ALPHA);
