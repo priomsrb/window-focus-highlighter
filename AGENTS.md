@@ -22,7 +22,7 @@ export PATH=/c/msys64/mingw64/bin:$PATH
 taskkill //f //im WindowHighlighter.exe   # the running exe locks the file
 windres app.rc -O coff -o app_res.o
 gcc -Os -fno-math-errno -municode -mwindows -s -Wall -Wl,--gc-sections highlighter.c app_res.o \
-    -o WindowHighlighter.exe -ldwmapi -lcomctl32 -lcomdlg32 -lshell32 -luser32 -lgdi32 -ladvapi32 -luxtheme -lmsimg32
+    -o WindowHighlighter.exe -lcomctl32 -lcomdlg32 -lshell32 -luser32 -lgdi32 -ladvapi32
 ```
 
 Keep the build warning-free (`-Wall`). Add new link libs to `build.bat` too. `*.o` and `*.exe` are gitignored.

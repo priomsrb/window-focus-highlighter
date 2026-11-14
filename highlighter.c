@@ -71,13 +71,44 @@ static void Sanitize(Config *c) {
     c->fadeMs = Clampi(c->fadeMs, 0, 5000);
 }
 
+// ---------------------------------------------------------------- system DLLs
+// dwmapi and uxtheme aren't KnownDLLs, so linking them would let a same-named DLL planted next to the exe
+// (e.g. in Downloads) load first. They're loaded from System32 only; everything else we link is a KnownDLL.
+static HMODULE hUxtheme;
+static HRESULT (WINAPI *pDwmGetWindowAttribute)(HWND, DWORD, PVOID, DWORD);
+static HRESULT (WINAPI *pDwmSetWindowAttribute)(HWND, DWORD, LPCVOID, DWORD);
+static HRESULT (WINAPI *pSetWindowTheme)(HWND, LPCWSTR, LPCWSTR);
+
+static void LoadSystemDlls(void) {
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);   // also covers DLLs that comdlg32 etc. load later
+    HMODULE d = LoadLibraryExW(L"dwmapi.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    hUxtheme = LoadLibraryExW(L"uxtheme.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (d) {
+        pDwmGetWindowAttribute = (void *)GetProcAddress(d, "DwmGetWindowAttribute");
+        pDwmSetWindowAttribute = (void *)GetProcAddress(d, "DwmSetWindowAttribute");
+    }
+    if (hUxtheme) pSetWindowTheme = (void *)GetProcAddress(hUxtheme, "SetWindowTheme");
+}
+static HRESULT DwmGetAttr(HWND h, DWORD a, void *v, DWORD n) {
+    return pDwmGetWindowAttribute ? pDwmGetWindowAttribute(h, a, v, n) : E_FAIL;
+}
+static HRESULT DwmSetAttr(HWND h, DWORD a, const void *v, DWORD n) {
+    return pDwmSetWindowAttribute ? pDwmSetWindowAttribute(h, a, v, n) : E_FAIL;
+}
+static void SetTheme(HWND h, LPCWSTR app, LPCWSTR id) { if (pSetWindowTheme) pSetWindowTheme(h, app, id); }
+
 // ---------------------------------------------------------------- config
 static void InitIniPath(void) {
     WCHAR dir[MAX_PATH];
     DWORD n = GetEnvironmentVariableW(L"APPDATA", dir, MAX_PATH);
-    if (!n || n >= MAX_PATH) { GetModuleFileNameW(NULL, dir, MAX_PATH); WCHAR *s = wcsrchr(dir, L'\\'); if (s) *s = 0; }
-    else { lstrcatW(dir, L"\\WindowHighlighter"); CreateDirectoryW(dir, NULL); }
-    lstrcpyW(iniPath, dir); lstrcatW(iniPath, L"\\settings.ini");
+    if (n && n + 32 <= MAX_PATH) { lstrcatW(dir, L"\\WindowHighlighter"); CreateDirectoryW(dir, NULL); }
+    else {   // no usable %APPDATA%: keep settings next to the exe
+        n = GetModuleFileNameW(NULL, dir, MAX_PATH);
+        WCHAR *s = n && n < MAX_PATH ? wcsrchr(dir, L'\\') : NULL;
+        if (s) *s = 0; else dir[0] = 0;
+    }
+    if (dir[0] && lstrlenW(dir) + 14 <= MAX_PATH) { lstrcpyW(iniPath, dir); lstrcatW(iniPath, L"\\settings.ini"); }
+    else lstrcpyW(iniPath, L"settings.ini");   // path too long: no readable file, so defaults are used
 }
 
 static int GI(const WCHAR *k, int d) { return (int)GetPrivateProfileIntW(L"Highlight", k, d, iniPath); }
@@ -131,6 +162,7 @@ static void SetStartup(int on) {
         WCHAR p[MAX_PATH + 2];
         p[0] = L'"';
         DWORD n = GetModuleFileNameW(NULL, p + 1, MAX_PATH);
+        if (!n || n >= MAX_PATH) { RegCloseKey(k); return; }   // failed or truncated: don't register a wrong path
         p[n + 1] = L'"'; p[n + 2] = 0;
         RegSetValueExW(k, L"WindowHighlighter", 0, REG_SZ, (BYTE *)p, (n + 3) * sizeof(WCHAR));
     } else RegDeleteValueW(k, L"WindowHighlighter");
@@ -219,7 +251,7 @@ static int WindowRadius(HWND w) {
     }
     if (!g_win11) return 0;
     int pref = 0;   // DWMWA_WINDOW_CORNER_PREFERENCE: 0 default, 1 none, 2 round, 3 small
-    DwmGetWindowAttribute(w, 33, &pref, sizeof pref);
+    DwmGetAttr(w, 33, &pref, sizeof pref);
     int base = pref == 1 ? 0 : pref == 3 ? 4 : 8;
     return MulDiv(base, GetDpiForWindow(w), 96);
 }
@@ -230,7 +262,7 @@ typedef struct { RECT r; int ww, wh, full, pad, ov; } Geom;
 // `pad`). Maximized / full screen: no room outside, so the border stays inside.
 static int GetGeom(HWND t, const Config *c, Geom *g) {
     if (!IsWindow(t) || IsIconic(t)) return 0;
-    if (FAILED(DwmGetWindowAttribute(t, DWMWA_EXTENDED_FRAME_BOUNDS, &g->r, sizeof g->r))) GetWindowRect(t, &g->r);
+    if (FAILED(DwmGetAttr(t, DWMWA_EXTENDED_FRAME_BOUNDS, &g->r, sizeof g->r))) GetWindowRect(t, &g->r);
     g->ww = g->r.right - g->r.left; g->wh = g->r.bottom - g->r.top;
     if (g->ww < 8 || g->wh < 8) return 0;
     MONITORINFO mi = { sizeof mi };
@@ -348,7 +380,7 @@ static void OnFocus(void) {
     HWND h = GetForegroundWindow();
     if (!h || h == hMain || h == hOverlay || !IsWindowVisible(h) || IsIconic(h)) return;
     DWORD cloaked = 0;
-    if (SUCCEEDED(DwmGetWindowAttribute(h, DWMWA_CLOAKED, &cloaked, sizeof cloaked)) && cloaked) return;
+    if (SUCCEEDED(DwmGetAttr(h, DWMWA_CLOAKED, &cloaked, sizeof cloaked)) && cloaked) return;
     WCHAR cls[64];
     if (GetClassNameW(h, cls, 64))
         for (int i = 0; kIgnoredClasses[i]; i++) if (!lstrcmpW(cls, kIgnoredClasses[i])) return;
@@ -445,7 +477,7 @@ static void RefreshDark(void) {
 }
 
 static void InitDark(void) {
-    HMODULE u = LoadLibraryW(L"uxtheme.dll");
+    HMODULE u = hUxtheme;
     if (u) {
         pSetPreferredAppMode = (void *)GetProcAddress(u, MAKEINTRESOURCEA(135));
         pAllowDarkModeForWindow = (void *)GetProcAddress(u, MAKEINTRESOURCEA(133));
@@ -462,13 +494,13 @@ static BOOL CALLBACK ThemeChild(HWND c, LPARAM l) {
     int lst = !lstrcmpiW(cls, L"ListBox");
     int edt = !lstrcmpiW(cls, L"Edit") || !lstrcmpiW(cls, L"ComboBox") || !lstrcmpiW(cls, HOTKEY_CLASSW);
     if (btn || trk || edt || lst)
-        SetWindowTheme(c, g_dark ? ((btn || trk || lst) ? L"DarkMode_Explorer" : L"DarkMode_CFD") : NULL, NULL);
+        SetTheme(c, g_dark ? ((btn || trk || lst) ? L"DarkMode_Explorer" : L"DarkMode_CFD") : NULL, NULL);
     return TRUE;
 }
 
 static void ApplyDlgTheme(HWND h) {
     BOOL d = g_dark;
-    DwmSetWindowAttribute(h, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &d, sizeof d);
+    DwmSetAttr(h, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &d, sizeof d);
     if (pAllowDarkModeForWindow) pAllowDarkModeForWindow(h, d);
     EnumChildWindows(h, ThemeChild, 0);
     SetWindowPos(h, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -773,7 +805,7 @@ static void PaintPreview(HWND h, HDC dc) {
         HGDIOBJ ho = SelectObject(hm, hb);
         Render((DWORD *)hbits, hw, hh, &cfg, (float)(rad + pad), pad > 0, cfg.thickness + ov);
         BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)g_prevAlpha, AC_SRC_ALPHA };
-        AlphaBlend(mem, x - pad, y - pad, hw, hh, hm, 0, 0, hw, hh, bf);
+        GdiAlphaBlend(mem, x - pad, y - pad, hw, hh, hm, 0, 0, hw, hh, bf);
         SelectObject(hm, ho);
     }
     if (hb) DeleteObject(hb);
@@ -1050,7 +1082,7 @@ static BOOL CALLBACK EnumOpen(HWND w, LPARAM l) {
     if (g_nOpen >= OPEN_MAX || !IsWindowVisible(w) || GetWindow(w, GW_OWNER) ||
         (GetWindowLongW(w, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) || !GetWindowTextW(w, title, 64)) return TRUE;
     DWORD cloaked = 0;
-    if (SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof cloaked)) && cloaked) return TRUE;
+    if (SUCCEEDED(DwmGetAttr(w, DWMWA_CLOAKED, &cloaked, sizeof cloaked)) && cloaked) return TRUE;
     DWORD pid; GetWindowThreadProcessId(w, &pid);
     if (pid == GetCurrentProcessId() || !ProcBase(w, exe, 64)) return TRUE;
     if (IgnoreIndexOf(exe) >= 0) return TRUE;
@@ -1266,6 +1298,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmd, int show) {
     hInst = hi;
+    LoadSystemDlls();
     HANDLE mtx = CreateMutexW(NULL, TRUE, L"WindowHighlighter.SingleInstance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND other = FindWindowW(MAIN_CLASS, NULL);
