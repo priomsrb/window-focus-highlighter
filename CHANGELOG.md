@@ -2,6 +2,11 @@
 
 Each release needs a `## vX.Y.Z` section here; its text becomes the GitHub Release notes.
 
+## v1.1.0
+
+- New "Enabled" switch card above the settings pages, with the toggle hotkey hint; it stays in sync with the tray menu and hotkey.
+- Settings window now opens on first launch.
+
 ## v1.0.0
 
 First release of Window Focus Highlighter, a small tray app that flashes a border and/or tint around the window that just got focus, then fades out.
