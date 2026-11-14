@@ -1,5 +1,7 @@
 # Window Focus Highlighter
 
+**Website: <https://shafqat.dev/window-focus-highlighter/>**
+
 A tiny Windows tray app that briefly highlights whichever window just received focus, then fades out.
 Never lose track of where your keyboard focus went again.
 
