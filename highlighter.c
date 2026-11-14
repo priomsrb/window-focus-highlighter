@@ -476,6 +476,8 @@ static void RefreshDark(void) {
     DWORD v = 1, n = sizeof v;
     RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
                  L"AppsUseLightTheme", RRF_RT_REG_DWORD, NULL, &v, &n);
+    WCHAR t[8];
+    if (GetEnvironmentVariableW(L"WFH_THEME", t, 8)) v = lstrcmpiW(t, L"light") == 0;  /* override, used by tools/screenshots.ps1 */
     g_dark = v == 0;
     if (g_brBg) { DeleteObject(g_brBg); DeleteObject(g_brSide); DeleteObject(g_brEdit); }
     g_brBg = CreateSolidBrush(C_BG());

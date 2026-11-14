@@ -1,5 +1,6 @@
 # Regenerates docs/img/{appearance,timing,behavior}{,-light}.png from the built exe.
-# Temporarily replaces settings.ini with defaults and flips the Windows app theme; both are restored afterwards.
+# Temporarily replaces settings.ini with defaults (restored afterwards) and forces the app's theme via WFH_THEME,
+# so the system theme is left alone.
 # If the sidebar layout changes, adjust the three $pages Y offsets (client pixels from the window's top).
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
@@ -20,11 +21,9 @@ $root = Split-Path $PSScriptRoot -Parent
 $exe = Join-Path $root 'WindowFocusHighlighter.exe'
 $outDir = Join-Path $root 'docs\img'
 $ini = Join-Path $env:APPDATA 'WindowFocusHighlighter\settings.ini'
-$key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
 $pages = [ordered]@{ appearance = 193; timing = 263; behavior = 333 }
 $defaults = "[Highlight]`r`nEnabled=1`r`nMode=0`r`nOpacity=90`r`nTintOpacity=20`r`nThickness=4`r`nSoftness=50`r`nHoldMs=350`r`nFadeMs=250`r`nHotkey=1608`r`nColor=3399FF`r`nIgnore=`r`n"
 
-$origTheme = (Get-ItemProperty $key).AppsUseLightTheme
 $origIni = if (Test-Path $ini) { [IO.File]::ReadAllBytes($ini) } else { $null }
 
 function Stop-App { Stop-Process -Name WindowFocusHighlighter -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500 }
@@ -32,7 +31,7 @@ function Stop-App { Stop-Process -Name WindowFocusHighlighter -Force -ErrorActio
 try {
     foreach ($theme in 'dark', 'light') {
         Stop-App
-        Set-ItemProperty $key AppsUseLightTheme $(if ($theme -eq 'light') { 1 } else { 0 })
+        $env:WFH_THEME = $theme
         [IO.File]::WriteAllText($ini, $defaults)
         Start-Process $exe; Start-Sleep -Milliseconds 800
         Start-Process $exe; Start-Sleep -Milliseconds 1500   # second launch opens settings in the first
@@ -56,7 +55,7 @@ try {
 }
 finally {
     Stop-App
-    Set-ItemProperty $key AppsUseLightTheme $origTheme
+    Remove-Item Env:WFH_THEME -ErrorAction SilentlyContinue
     if ($null -ne $origIni) { [IO.File]::WriteAllBytes($ini, $origIni) }
     Start-Process $exe; Start-Sleep -Milliseconds 800; Start-Process $exe   # leave app running with settings open
 }
