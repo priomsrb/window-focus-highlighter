@@ -630,20 +630,62 @@ static void PaintPreview(HWND h, HDC dc) {
     HBRUSH bg = CreateSolidBrush(C_PANEL());
     FillRect(mem, &rc, bg); DeleteObject(bg);
 
-    int ww = S(180), wh = S(60), x = (pw - ww) / 2, y = (ph - wh) / 2;
+    int ww = S(210), wh = S(74), x = (pw - ww) / 2, y = (ph - S(22) - wh) / 2 + S(4);
     int rad = WindowRadius(h);
-    HBRUSH fb = CreateSolidBrush(g_dark ? RGB(43, 43, 43) : RGB(255, 255, 255));
-    HPEN fp = CreatePen(PS_SOLID, 1, g_dark ? RGB(72, 72, 72) : RGB(200, 200, 200));
+    COLORREF winBg = g_dark ? RGB(43, 43, 43) : RGB(255, 255, 255);
+    COLORREF titleBg = g_dark ? RGB(32, 32, 32) : RGB(243, 243, 243);
+    COLORREF edge = g_dark ? RGB(72, 72, 72) : RGB(200, 200, 200);
+    COLORREF line = g_dark ? RGB(74, 74, 74) : RGB(214, 214, 214);
+    COLORREF glyph = g_dark ? RGB(215, 215, 215) : RGB(70, 70, 70);
+    int pw1 = g_dpi >= 144 ? 2 : 1;
+
+    HBRUSH fb = CreateSolidBrush(winBg), tb = CreateSolidBrush(titleBg), lb = CreateSolidBrush(line);
+    HPEN fp = CreatePen(PS_SOLID, 1, edge);
     HGDIOBJ ob = SelectObject(mem, fb), opn = SelectObject(mem, fp);
     RoundRect(mem, x, y, x + ww, y + wh, 2 * rad, 2 * rad);
-    SelectObject(mem, ob); SelectObject(mem, opn); DeleteObject(fb); DeleteObject(fp);
-    HBRUSH lb = CreateSolidBrush(g_dark ? RGB(74, 74, 74) : RGB(214, 214, 214));
-    int lens[3] = { 90, 140, 110 };
+    SelectObject(mem, ob); SelectObject(mem, opn);
+
+    // title bar, clipped to the window's rounded top corners
+    HRGN clip = CreateRoundRectRgn(x + 1, y + 1, x + ww, y + wh, 2 * rad, 2 * rad);
+    SelectClipRgn(mem, clip);
+    RECT tr = { x, y, x + ww, y + S(24) };
+    FillRect(mem, &tr, tb);
+    SelectClipRgn(mem, NULL); DeleteObject(clip);
+    HPEN sep = CreatePen(PS_SOLID, 1, edge);
+    opn = SelectObject(mem, sep);
+    MoveToEx(mem, x + 1, y + S(24), NULL); LineTo(mem, x + ww - 1, y + S(24));
+
+    // app icon + title
+    RECT ic = { x + S(9), y + S(8), x + S(17), y + S(16) };
+    HBRUSH ab = CreateSolidBrush(C_ACCENT());
+    FillRect(mem, &ic, ab);
+    RECT tt = { x + S(24), y + S(10), x + S(24 + 56), y + S(14) };
+    FillRect(mem, &tt, lb);
+
+    // window controls: minimize, maximize, close
+    HPEN gp = CreatePen(PS_SOLID, pw1, glyph);
+    SelectObject(mem, gp);
+    HGDIOBJ nb = SelectObject(mem, GetStockObject(NULL_BRUSH));
+    int cw = S(30), cy = y + S(12), g5 = S(5);
+    int cx3 = x + ww - cw / 2;               // close
+    int cx2 = cx3 - cw;                      // maximize
+    int cx1 = cx2 - cw;                      // minimize
+    MoveToEx(mem, cx1 - g5, cy, NULL); LineTo(mem, cx1 + g5 + 1, cy);
+    Rectangle(mem, cx2 - g5, cy - g5, cx2 + g5 + 1, cy + g5 + 1);
+    MoveToEx(mem, cx3 - g5, cy - g5, NULL); LineTo(mem, cx3 + g5 + 1, cy + g5 + 1);
+    MoveToEx(mem, cx3 + g5, cy - g5, NULL); LineTo(mem, cx3 - g5 - 1, cy + g5 + 1);
+    SelectObject(mem, nb); SelectObject(mem, opn);
+    DeleteObject(gp); DeleteObject(sep); DeleteObject(fp);
+
+    // body: text lines and a button
+    int lens[3] = { 100, 150, 120 };
     for (int i = 0; i < 3; i++) {
-        RECT l = { x + S(14), y + S(14 + i * 14), x + S(14 + lens[i]), y + S(20 + i * 14) };
+        RECT l = { x + S(14), y + S(36 + i * 11), x + S(14 + lens[i]), y + S(40 + i * 11) };
         FillRect(mem, &l, lb);
     }
-    DeleteObject(lb);
+    RECT bt = { x + ww - S(14 + 44), y + wh - S(10 + 14), x + ww - S(14), y + wh - S(10) };
+    FillRect(mem, &bt, ab);
+    DeleteObject(fb); DeleteObject(tb); DeleteObject(lb); DeleteObject(ab);
 
     int pad = cfg.mode == MODE_TINT ? 0 : cfg.thickness;
     int ov = pad ? MulDiv(2, g_dpi, 96) : 0;
