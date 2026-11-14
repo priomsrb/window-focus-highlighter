@@ -269,9 +269,14 @@ static int GetGeom(HWND t, const Config *c, Geom *g) {
     GetMonitorInfoW(MonitorFromWindow(t, MONITOR_DEFAULTTONEAREST), &mi);
     g->full = IsZoomed(t) || (g->r.left <= mi.rcMonitor.left && g->r.top <= mi.rcMonitor.top &&
                               g->r.right >= mi.rcMonitor.right && g->r.bottom >= mi.rcMonitor.bottom);
+    if (g->full) {   // a maximized window's frame can extend past the monitor; keep the inside border on screen
+        IntersectRect(&g->r, &g->r, &mi.rcMonitor);
+        g->ww = g->r.right - g->r.left; g->wh = g->r.bottom - g->r.top;
+    }
     g->pad = (g->full || c->mode == MODE_TINT) ? 0 : c->thickness;
     // DWM draws a ~1px border line at the window edge; overlap it so no sliver shows between border and window.
-    g->ov = g->pad ? MulDiv(2, GetDpiForWindow(t), 96) : 0;
+    // Inside borders get the same extra width so the visible band matches windowed ones.
+    g->ov = c->mode != MODE_TINT ?MulDiv(2, GetDpiForWindow(t), 96) : 0;
     return 1;
 }
 
