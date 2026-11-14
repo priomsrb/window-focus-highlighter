@@ -33,9 +33,8 @@ typedef struct {
 
 enum { T_DEBOUNCE = 1, T_HOLD, T_FADE };
 enum { IDM_ENABLE = 1, IDM_SETTINGS, IDM_STARTUP, IDM_EXIT };
-enum { IDC_ENABLE = 101, IDC_MODE, IDC_SWATCH, IDC_PICK, IDC_OPACITY, IDC_TINT, IDC_THICK, IDC_SOFT,
-       IDC_HOLD, IDC_FADE, IDC_HOTKEY, IDC_HKCLEAR, IDC_IGNORE, IDC_STARTUP,
-       IDC_PREVIEW };
+enum { IDC_ENABLE = 101, IDC_MODE, IDC_SWATCH, IDC_PICK, IDC_HOTKEY, IDC_HKCLEAR, IDC_IGNORE, IDC_STARTUP, IDC_PBOX,
+       IDC_OPACITY = 110, IDC_TINT, IDC_THICK, IDC_SOFT, IDC_HOLD, IDC_FADE };   // slider value labels use id + 100
 
 static HINSTANCE hInst;
 static HWND hMain, hOverlay, hDlg;
@@ -369,20 +368,30 @@ static void RegisterHotkey(void) {
 // ---------------------------------------------------------------- dark mode
 // Follows the system "app mode" setting. Uses undocumented uxtheme ordinals (same ones Explorer uses)
 // for dark popup menus; everything else is documented API plus WM_CTLCOLOR* painting.
-#define DARK_BG   RGB(32, 32, 32)
-#define DARK_EDIT RGB(45, 45, 45)
-#define DARK_TEXT RGB(240, 240, 240)
 static int g_dark;
-static HBRUSH g_brBg, g_brEdit;
+static HBRUSH g_brBg, g_brEdit, g_brSide;
 static int (WINAPI *pSetPreferredAppMode)(int);
 static BOOL (WINAPI *pAllowDarkModeForWindow)(HWND, BOOL);
 static void (WINAPI *pFlushMenuThemes)(void);
+
+#define C_BG()     (g_dark ? RGB(32, 32, 32) : RGB(249, 249, 249))
+#define C_SIDE()   (g_dark ? RGB(40, 40, 40) : RGB(238, 238, 238))
+#define C_EDIT()   (g_dark ? RGB(45, 45, 45) : RGB(255, 255, 255))
+#define C_TEXT()   (g_dark ? RGB(240, 240, 240) : RGB(20, 20, 20))
+#define C_MUTED()  (g_dark ? RGB(160, 160, 160) : RGB(100, 100, 100))
+#define C_SEL()    (g_dark ? RGB(58, 58, 58) : RGB(222, 222, 222))
+#define C_ACCENT() (g_dark ? RGB(96, 205, 255) : RGB(0, 103, 192))
+#define C_PANEL()  (g_dark ? RGB(22, 22, 22) : RGB(228, 228, 228))
 
 static void RefreshDark(void) {
     DWORD v = 1, n = sizeof v;
     RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
                  L"AppsUseLightTheme", RRF_RT_REG_DWORD, NULL, &v, &n);
     g_dark = v == 0;
+    if (g_brBg) { DeleteObject(g_brBg); DeleteObject(g_brSide); DeleteObject(g_brEdit); }
+    g_brBg = CreateSolidBrush(C_BG());
+    g_brSide = CreateSolidBrush(C_SIDE());
+    g_brEdit = CreateSolidBrush(C_EDIT());
     if (pFlushMenuThemes) pFlushMenuThemes();
 }
 
@@ -394,22 +403,16 @@ static void InitDark(void) {
         pFlushMenuThemes = (void *)GetProcAddress(u, MAKEINTRESOURCEA(136));
     }
     if (pSetPreferredAppMode) pSetPreferredAppMode(1);   // AllowDark: menus follow the system
-    g_brBg = CreateSolidBrush(DARK_BG);
-    g_brEdit = CreateSolidBrush(DARK_EDIT);
     RefreshDark();
 }
 
 static BOOL CALLBACK ThemeChild(HWND c, LPARAM l) {
     WCHAR cls[32];
     GetClassNameW(c, cls, 32);
-    LPCWSTR t = NULL;
-    if (g_dark) {
-        if (!lstrcmpiW(cls, L"Button")) t = L"DarkMode_Explorer";
-        else if (!lstrcmpiW(cls, L"Edit") || !lstrcmpiW(cls, L"ComboBox") || !lstrcmpiW(cls, HOTKEY_CLASSW))
-            t = L"DarkMode_CFD";
-    }
-    if (t || !lstrcmpiW(cls, L"Button") || !lstrcmpiW(cls, L"Edit") || !lstrcmpiW(cls, L"ComboBox"))
-        SetWindowTheme(c, t, NULL);
+    int btn = !lstrcmpiW(cls, L"Button"), trk = !lstrcmpiW(cls, TRACKBAR_CLASSW);
+    int edt = !lstrcmpiW(cls, L"Edit") || !lstrcmpiW(cls, L"ComboBox") || !lstrcmpiW(cls, HOTKEY_CLASSW);
+    if (btn || trk || edt)
+        SetWindowTheme(c, g_dark ? ((btn || trk) ? L"DarkMode_Explorer" : L"DarkMode_CFD") : NULL, NULL);
     return TRUE;
 }
 
@@ -425,49 +428,90 @@ static void ApplyDlgTheme(HWND h) {
 static int IsColorSetChange(LPARAM l) { return l && !lstrcmpW((LPCWSTR)l, L"ImmersiveColorSet"); }
 
 // ---------------------------------------------------------------- settings dialog
+// Sidebar (custom painted) + pages of child controls + a live preview panel above the page.
+enum { PG_APPEAR, PG_TIMING, PG_BEHAVIOR, PG_IGNORE, PG_COUNT };
+static const WCHAR *const kPageNames[] = { L"Appearance", L"Timing", L"Behavior", L"Ignore list" };
+#define SIDE_W   140
+#define CLIENT_W 580
+#define CLIENT_H 396
+#define CX       164     // content left edge
+#define CTL_X    276     // control column
+#define SAVE_TIMER 1
+
 static int g_dpi = 96;
 static HFONT g_font;
 static COLORREF dlgColor;
-static HWND hSwatch;
+static HWND hSwatch, hPrev;
 static COLORREF custColors[16];
+static int g_page, g_loading, g_dirty;
+static HWND ctl[64];
+static int ctlPage[64], nctl, creatingPage = -1;
 
 static int S(int v) { return MulDiv(v, g_dpi, 96); }
 
 static HWND Mk(LPCWSTR cls, LPCWSTR text, DWORD style, DWORD ex, int x, int y, int w, int h, int id) {
-    return CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | style, S(x), S(y), S(w), S(h),
-                           hDlg, (HMENU)(INT_PTR)id, hInst, NULL);
+    HWND c = CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | style, S(x), S(y), S(w), S(h),
+                             hDlg, (HMENU)(INT_PTR)id, hInst, NULL);
+    if (nctl < 64) { ctl[nctl] = c; ctlPage[nctl++] = creatingPage; }
+    return c;
 }
-static void Label(LPCWSTR t, int y) { Mk(L"STATIC", t, SS_LEFT | SS_CENTERIMAGE, 0, 12, y, 150, 22, -1); }
-static void NumRow(LPCWSTR t, int id, int y) {
-    Label(t, y);
-    Mk(L"EDIT", L"", ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE, 170, y, 70, 22, id);
+static void Label(LPCWSTR t, int y) { Mk(L"STATIC", t, SS_LEFT | SS_CENTERIMAGE, 0, CX, y, 106, 28, -1); }
+
+typedef struct { int id, lo, hi, step; const WCHAR *unit; } SliderDef;
+static const SliderDef kSliders[] = {
+    { IDC_OPACITY, 1, 100, 1, L"%" }, { IDC_TINT, 1, 100, 1, L"%" }, { IDC_THICK, 1, 30, 1, L" px" },
+    { IDC_SOFT, 0, 100, 1, L"%" },   { IDC_HOLD, 0, 60, 50, L" ms" }, { IDC_FADE, 0, 40, 50, L" ms" },
+};
+static const SliderDef *FindSlider(int id) {
+    for (int i = 0; i < (int)(sizeof kSliders / sizeof *kSliders); i++) if (kSliders[i].id == id) return &kSliders[i];
+    return NULL;
+}
+static int SliderVal(int id) {
+    return (int)SendDlgItemMessageW(hDlg, id, TBM_GETPOS, 0, 0) * FindSlider(id)->step;
+}
+static void UpdateValueLabel(int id) {
+    if (!FindSlider(id)) return;
+    WCHAR b[32];
+    wsprintfW(b, L"%d", SliderVal(id));
+    lstrcatW(b, FindSlider(id)->unit);
+    SetDlgItemTextW(hDlg, id + 100, b);
+}
+static void SliderRow(LPCWSTR text, int id, int y) {
+    const SliderDef *d = FindSlider(id);
+    Label(text, y);
+    HWND t = Mk(TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | TBS_BOTH | WS_TABSTOP, 0, CTL_X - 6, y, 210, 28, id);
+    SendMessageW(t, TBM_SETRANGE, TRUE, MAKELPARAM(d->lo, d->hi));
+    Mk(L"STATIC", L"", SS_RIGHT | SS_CENTERIMAGE, 0, CTL_X + 210, y, 68, 28, id + 100);
 }
 
 static BOOL CALLBACK SetFont(HWND h, LPARAM f) { SendMessageW(h, WM_SETFONT, f, TRUE); return TRUE; }
-
-static int GetNum(int id) { return (int)GetDlgItemInt(hDlg, id, NULL, FALSE); }
 
 static void ReadDialog(Config *c) {
     c->enabled = IsDlgButtonChecked(hDlg, IDC_ENABLE) == BST_CHECKED;
     c->mode = (int)SendDlgItemMessageW(hDlg, IDC_MODE, CB_GETCURSEL, 0, 0);
     c->color = dlgColor;
-    c->opacity = GetNum(IDC_OPACITY); c->tintOpacity = GetNum(IDC_TINT);
-    c->thickness = GetNum(IDC_THICK); c->softness = GetNum(IDC_SOFT);
-    c->holdMs = GetNum(IDC_HOLD); c->fadeMs = GetNum(IDC_FADE);
+    c->opacity = SliderVal(IDC_OPACITY); c->tintOpacity = SliderVal(IDC_TINT);
+    c->thickness = SliderVal(IDC_THICK); c->softness = SliderVal(IDC_SOFT);
+    c->holdMs = SliderVal(IDC_HOLD); c->fadeMs = SliderVal(IDC_FADE);
     c->hotkey = LOWORD(SendDlgItemMessageW(hDlg, IDC_HOTKEY, HKM_GETHOTKEY, 0, 0));
     GetDlgItemTextW(hDlg, IDC_IGNORE, c->ignore, 256);
     Sanitize(c);
 }
 
-static int g_loading;
+static void SetSliderVal(int id, int v) {
+    const SliderDef *d = FindSlider(id);
+    SendDlgItemMessageW(hDlg, id, TBM_SETPOS, TRUE, Clampi((v + d->step / 2) / d->step, d->lo, d->hi));
+    UpdateValueLabel(id);
+}
+
 static void PutDialog(const Config *c) {
     g_loading = 1;
     CheckDlgButton(hDlg, IDC_ENABLE, c->enabled ? BST_CHECKED : BST_UNCHECKED);
     SendDlgItemMessageW(hDlg, IDC_MODE, CB_SETCURSEL, c->mode, 0);
     dlgColor = c->color;
-    SetDlgItemInt(hDlg, IDC_OPACITY, c->opacity, FALSE); SetDlgItemInt(hDlg, IDC_TINT, c->tintOpacity, FALSE);
-    SetDlgItemInt(hDlg, IDC_THICK, c->thickness, FALSE); SetDlgItemInt(hDlg, IDC_SOFT, c->softness, FALSE);
-    SetDlgItemInt(hDlg, IDC_HOLD, c->holdMs, FALSE); SetDlgItemInt(hDlg, IDC_FADE, c->fadeMs, FALSE);
+    SetSliderVal(IDC_OPACITY, c->opacity); SetSliderVal(IDC_TINT, c->tintOpacity);
+    SetSliderVal(IDC_THICK, c->thickness); SetSliderVal(IDC_SOFT, c->softness);
+    SetSliderVal(IDC_HOLD, c->holdMs); SetSliderVal(IDC_FADE, c->fadeMs);
     SendDlgItemMessageW(hDlg, IDC_HOTKEY, HKM_SETHOTKEY, c->hotkey, 0);
     SetDlgItemTextW(hDlg, IDC_IGNORE, c->ignore);
     CheckDlgButton(hDlg, IDC_STARTUP, IsStartup() ? BST_CHECKED : BST_UNCHECKED);
@@ -475,58 +519,187 @@ static void PutDialog(const Config *c) {
     g_loading = 0;
 }
 
-
-// Every control change takes effect immediately (no Apply button).
-static void LiveApply(void) {
-    if (g_loading) return;
-    ReadDialog(&cfg);
+// Persisting (ini write, registry, hotkey) is debounced so dragging a slider stays smooth.
+static void FlushSave(void) {
+    if (!g_dirty) return;
+    g_dirty = 0;
+    KillTimer(hDlg, SAVE_TIMER);
     SaveConfig();
     SetStartup(IsDlgButtonChecked(hDlg, IDC_STARTUP) == BST_CHECKED);
     RegisterHotkey();
     UpdateTip();
+}
+
+// Every control change takes effect immediately; the preview redraws at once.
+static void LiveApply(void) {
+    if (g_loading) return;
+    ReadDialog(&cfg);
     if (!cfg.enabled) HideOverlay();
+    if (hPrev) InvalidateRect(hPrev, NULL, FALSE);
+    g_dirty = 1;
+    SetTimer(hDlg, SAVE_TIMER, 250, NULL);
+}
+
+static void SetPage(int p) {
+    g_page = p;
+    for (int i = 0; i < nctl; i++)
+        if (ctlPage[i] >= 0) ShowWindow(ctl[i], ctlPage[i] == p ? SW_SHOWNA : SW_HIDE);
+    RECT rc = { 0, 0, S(SIDE_W), S(CLIENT_H) };
+    InvalidateRect(hDlg, &rc, FALSE);
+}
+
+static void PaintSidebar(HDC dc) {
+    RECT side = { 0, 0, S(SIDE_W), S(CLIENT_H) };
+    FillRect(dc, &side, g_brSide);
+    HGDIOBJ of = SelectObject(dc, g_font), op = SelectObject(dc, GetStockObject(NULL_PEN));
+    SetBkMode(dc, TRANSPARENT);
+    for (int i = 0; i < PG_COUNT; i++) {
+        RECT it = { S(8), S(16 + i * 40), S(SIDE_W - 8), S(16 + i * 40 + 34) };
+        if (i == g_page) {
+            HBRUSH b = CreateSolidBrush(C_SEL()), ab = CreateSolidBrush(C_ACCENT());
+            HGDIOBJ ob = SelectObject(dc, b);
+            RoundRect(dc, it.left, it.top, it.right + 1, it.bottom + 1, S(8), S(8));
+            SelectObject(dc, ob); DeleteObject(b);
+            RECT bar = { it.left, it.top + S(9), it.left + S(3), it.bottom - S(9) };
+            FillRect(dc, &bar, ab); DeleteObject(ab);
+        }
+        SetTextColor(dc, i == g_page ? C_TEXT() : C_MUTED());
+        RECT tr = it; tr.left += S(16);
+        DrawTextW(dc, kPageNames[i], -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+    }
+    SelectObject(dc, op); SelectObject(dc, of);
+}
+
+static HBITMAP NewDIB(HDC like, int w, int h, void **bits) {
+    BITMAPINFO bi = {0};
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+    return CreateDIBSection(like, &bi, DIB_RGB_COLORS, bits, NULL, 0);
+}
+
+// Preview: a mock window with the current highlight drawn exactly as the overlay would draw it.
+static void PaintPreview(HWND h, HDC dc) {
+    RECT rc; GetClientRect(h, &rc);
+    int pw = rc.right, ph = rc.bottom;
+    void *bits = NULL;
+    HDC mem = CreateCompatibleDC(dc);
+    HBITMAP bmp = NewDIB(dc, pw, ph, &bits);
+    HGDIOBJ old = SelectObject(mem, bmp);
+
+    HBRUSH bg = CreateSolidBrush(C_PANEL());
+    FillRect(mem, &rc, bg); DeleteObject(bg);
+
+    int ww = S(180), wh = S(60), x = (pw - ww) / 2, y = (ph - wh) / 2;
+    int rad = WindowRadius(h);
+    HBRUSH fb = CreateSolidBrush(g_dark ? RGB(43, 43, 43) : RGB(255, 255, 255));
+    HPEN fp = CreatePen(PS_SOLID, 1, g_dark ? RGB(72, 72, 72) : RGB(200, 200, 200));
+    HGDIOBJ ob = SelectObject(mem, fb), opn = SelectObject(mem, fp);
+    RoundRect(mem, x, y, x + ww, y + wh, 2 * rad, 2 * rad);
+    SelectObject(mem, ob); SelectObject(mem, opn); DeleteObject(fb); DeleteObject(fp);
+    HBRUSH lb = CreateSolidBrush(g_dark ? RGB(74, 74, 74) : RGB(214, 214, 214));
+    int lens[3] = { 90, 140, 110 };
+    for (int i = 0; i < 3; i++) {
+        RECT l = { x + S(14), y + S(14 + i * 14), x + S(14 + lens[i]), y + S(20 + i * 14) };
+        FillRect(mem, &l, lb);
+    }
+    DeleteObject(lb);
+
+    int pad = cfg.mode == MODE_TINT ? 0 : cfg.thickness;
+    int ov = pad ? MulDiv(2, g_dpi, 96) : 0;
+    int hw = ww + 2 * pad, hh = wh + 2 * pad;
+    void *hbits = NULL;
+    HDC hm = CreateCompatibleDC(dc);
+    HBITMAP hb = NewDIB(dc, hw, hh, &hbits);
+    if (hb && hbits) {
+        HGDIOBJ ho = SelectObject(hm, hb);
+        Render((DWORD *)hbits, hw, hh, &cfg, (float)(rad + pad), pad > 0, cfg.thickness + ov);
+        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+        AlphaBlend(mem, x - pad, y - pad, hw, hh, hm, 0, 0, hw, hh, bf);
+        SelectObject(hm, ho);
+    }
+    if (hb) DeleteObject(hb);
+    DeleteDC(hm);
+
+    HGDIOBJ of = SelectObject(mem, g_font);
+    SetBkMode(mem, TRANSPARENT); SetTextColor(mem, C_MUTED());
+    RECT hr = { 0, ph - S(22), pw, ph - S(4) };
+    DrawTextW(mem, L"Click to flash this window", -1, &hr, DT_CENTER | DT_SINGLELINE);
+    SelectObject(mem, of);
+
+    BitBlt(dc, 0, 0, pw, ph, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem);
+}
+
+static LRESULT CALLBACK PrevProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); PaintPreview(h, dc); EndPaint(h, &ps); return 0; }
+    case WM_ERASEBKGND: return 1;
+    case WM_SETCURSOR: SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_HAND)); return TRUE;
+    case WM_LBUTTONDOWN: if (hDlg) ShowHighlight(hDlg, &cfg); return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
 }
 
 static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_CREATE: {
-        hDlg = h;
-        int y = 12;
-        Mk(L"BUTTON", L"Highlight when window focus changes", BS_AUTOCHECKBOX | WS_TABSTOP, 0, 12, y, 330, 22, IDC_ENABLE); y += 30;
+        hDlg = h; nctl = 0; creatingPage = -1; g_page = 0;
+        hPrev = Mk(L"WHPreview", L"", 0, 0, CX, 16, CLIENT_W - CX - 16, 124, IDC_PBOX);
+        int y0 = 160, y;
+
+        creatingPage = PG_APPEAR; y = y0;
         Label(L"Style", y);
-        HWND cb = Mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, 0, 170, y, 172, 120, IDC_MODE);
+        HWND cb = Mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, 0, CTL_X, y + 2, 180, 120, IDC_MODE);
         SendMessageW(cb, CB_ADDSTRING, 0, (LPARAM)L"Border");
         SendMessageW(cb, CB_ADDSTRING, 0, (LPARAM)L"Tint");
-        SendMessageW(cb, CB_ADDSTRING, 0, (LPARAM)L"Border + tint"); y += 30;
+        SendMessageW(cb, CB_ADDSTRING, 0, (LPARAM)L"Border + tint"); y += 36;
         Label(L"Color", y);
-        hSwatch = Mk(L"STATIC", L"", SS_NOTIFY | WS_BORDER, 0, 170, y, 40, 22, IDC_SWATCH);
-        Mk(L"BUTTON", L"Choose...", BS_PUSHBUTTON | WS_TABSTOP, 0, 218, y, 90, 22, IDC_PICK); y += 30;
-        NumRow(L"Border opacity (%)", IDC_OPACITY, y); y += 30;
-        NumRow(L"Tint opacity (%)", IDC_TINT, y); y += 30;
-        NumRow(L"Border thickness (px)", IDC_THICK, y); y += 30;
-        NumRow(L"Border fade (%)", IDC_SOFT, y); y += 30;
-        NumRow(L"Show duration (ms)", IDC_HOLD, y); y += 30;
-        NumRow(L"Fade-out time (ms)", IDC_FADE, y); y += 30;
+        hSwatch = Mk(L"STATIC", L"", SS_NOTIFY | WS_BORDER, 0, CTL_X, y + 2, 44, 24, IDC_SWATCH);
+        Mk(L"BUTTON", L"Choose...", BS_PUSHBUTTON | WS_TABSTOP, 0, CTL_X + 54, y + 1, 92, 26, IDC_PICK); y += 36;
+        SliderRow(L"Border opacity", IDC_OPACITY, y); y += 36;
+        SliderRow(L"Tint opacity", IDC_TINT, y); y += 36;
+        SliderRow(L"Thickness", IDC_THICK, y); y += 36;
+        SliderRow(L"Edge fade", IDC_SOFT, y);
+
+        creatingPage = PG_TIMING; y = y0;
+        SliderRow(L"Show for", IDC_HOLD, y); y += 36;
+        SliderRow(L"Fade out", IDC_FADE, y);
+
+        creatingPage = PG_BEHAVIOR; y = y0;
+        Mk(L"BUTTON", L"Highlight when window focus changes", BS_AUTOCHECKBOX | WS_TABSTOP, 0, CX, y, 380, 28, IDC_ENABLE); y += 36;
+        Mk(L"BUTTON", L"Start with Windows", BS_AUTOCHECKBOX | WS_TABSTOP, 0, CX, y, 380, 28, IDC_STARTUP); y += 36;
         Label(L"Toggle hotkey", y);
-        Mk(HOTKEY_CLASSW, L"", WS_TABSTOP, WS_EX_CLIENTEDGE, 170, y, 130, 22, IDC_HOTKEY);
-        Mk(L"BUTTON", L"Clear", BS_PUSHBUTTON | WS_TABSTOP, 0, 306, y, 36, 22, IDC_HKCLEAR); y += 30;
-        Mk(L"STATIC", L"Ignored programs (exe names separated by ;)", SS_LEFT, 0, 12, y, 330, 18, -1); y += 20;
-        Mk(L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE, 12, y, 330, 22, IDC_IGNORE); y += 30;
-        Mk(L"BUTTON", L"Start with Windows", BS_AUTOCHECKBOX | WS_TABSTOP, 0, 12, y, 330, 22, IDC_STARTUP); y += 34;
-        Mk(L"BUTTON", L"Preview", BS_PUSHBUTTON | WS_TABSTOP, 0, 12, y, 72, 26, IDC_PREVIEW);
-        Mk(L"BUTTON", L"Close", BS_DEFPUSHBUTTON | WS_TABSTOP, 0, 264, y, 78, 26, IDOK); y += 38;
+        Mk(HOTKEY_CLASSW, L"", WS_TABSTOP, WS_EX_CLIENTEDGE, CTL_X, y + 1, 150, 26, IDC_HOTKEY);
+        Mk(L"BUTTON", L"Clear", BS_PUSHBUTTON | WS_TABSTOP, 0, CTL_X + 160, y + 1, 56, 26, IDC_HKCLEAR);
+
+        creatingPage = PG_IGNORE; y = y0;
+        Mk(L"STATIC", L"Windows from these programs are never highlighted. Enter exe names separated by semicolons, "
+                      L"for example notepad.exe; chrome.exe", SS_LEFT, 0, CX, y, 400, 40, -1); y += 48;
+        Mk(L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE, CX, y, 400, 26, IDC_IGNORE);
+        creatingPage = -1;
 
         g_font = CreateFontW(-MulDiv(9, g_dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
                              CLEARTYPE_QUALITY, 0, L"Segoe UI");
         EnumChildWindows(h, SetFont, (LPARAM)g_font);
         PutDialog(&cfg);
+        SetPage(PG_APPEAR);
         ApplyDlgTheme(h);
 
-        RECT rc = { 0, 0, S(354), S(y) };
+        RECT rc = { 0, 0, S(CLIENT_W), S(CLIENT_H) };
         AdjustWindowRectExForDpi(&rc, WS_CAPTION | WS_SYSMENU, FALSE, 0, g_dpi);
         int ww = rc.right - rc.left, wh = rc.bottom - rc.top;
         SetWindowPos(h, NULL, (GetSystemMetrics(SM_CXSCREEN) - ww) / 2, (GetSystemMetrics(SM_CYSCREEN) - wh) / 2,
                      ww, wh, SWP_NOZORDER);
+        return 0;
+    }
+    case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); PaintSidebar(dc); EndPaint(h, &ps); return 0; }
+    case WM_LBUTTONDOWN: {
+        int x = (short)LOWORD(l), y = (short)HIWORD(l);
+        if (x < S(SIDE_W)) {
+            int i = (y - S(16)) / S(40);
+            if (y >= S(16) && i >= 0 && i < PG_COUNT && i != g_page) SetPage(i);
+        }
         return 0;
     }
     case WM_CTLCOLORSTATIC:
@@ -534,17 +707,22 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             SetDCBrushColor((HDC)w, dlgColor);
             return (LRESULT)GetStockObject(DC_BRUSH);
         }
-        if (g_dark) { SetTextColor((HDC)w, DARK_TEXT); SetBkColor((HDC)w, DARK_BG); return (LRESULT)g_brBg; }
-        break;
+        SetTextColor((HDC)w, C_TEXT()); SetBkColor((HDC)w, C_BG());
+        return (LRESULT)g_brBg;
     case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
-        if (g_dark) { SetTextColor((HDC)w, DARK_TEXT); SetBkColor((HDC)w, DARK_EDIT); return (LRESULT)g_brEdit; }
+        if (g_dark) { SetTextColor((HDC)w, C_TEXT()); SetBkColor((HDC)w, C_EDIT()); return (LRESULT)g_brEdit; }
         break;
-    case WM_ERASEBKGND:
-        if (g_dark) { RECT rc; GetClientRect(h, &rc); FillRect((HDC)w, &rc, g_brBg); return 1; }
-        break;
+    case WM_ERASEBKGND: { RECT rc; GetClientRect(h, &rc); FillRect((HDC)w, &rc, g_brBg); return 1; }
     case WM_SETTINGCHANGE:
         if (IsColorSetChange(l)) { RefreshDark(); ApplyDlgTheme(h); }
         break;
+    case WM_TIMER:
+        if (w == SAVE_TIMER) FlushSave();
+        return 0;
+    case WM_HSCROLL:
+        UpdateValueLabel(GetDlgCtrlID((HWND)l));
+        LiveApply();
+        return 0;
     case WM_COMMAND:
         switch (LOWORD(w)) {
         case IDC_SWATCH: case IDC_PICK: {
@@ -559,17 +737,16 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case IDC_MODE:
             if (HIWORD(w) == CBN_SELCHANGE) LiveApply();
             return 0;
-        case IDC_OPACITY: case IDC_TINT: case IDC_THICK: case IDC_SOFT: case IDC_HOLD: case IDC_FADE:
         case IDC_HOTKEY: case IDC_IGNORE:
             if (HIWORD(w) == EN_CHANGE) LiveApply();
             return 0;
-        case IDC_PREVIEW: { Config t = cfg; ReadDialog(&t); ShowHighlight(h, &t); return 0; }
-        case IDOK: case IDCANCEL: DestroyWindow(h); return 0;
+        case IDCANCEL: DestroyWindow(h); return 0;
         }
         break;
     case WM_CLOSE: DestroyWindow(h); return 0;
     case WM_DESTROY:
-        DeleteObject(g_font); g_font = NULL; hDlg = NULL;
+        FlushSave();
+        DeleteObject(g_font); g_font = NULL; hDlg = NULL; hPrev = NULL;
         return 0;
     }
     return DefWindowProcW(h, m, w, l);
@@ -648,7 +825,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmd, int show) {
         if (other) PostMessageW(other, WM_OPEN, 0, 0);
         return 0;
     }
-    INITCOMMONCONTROLSEX ic = { sizeof ic, ICC_HOTKEY_CLASS | ICC_STANDARD_CLASSES };
+    INITCOMMONCONTROLSEX ic = { sizeof ic, ICC_HOTKEY_CLASS | ICC_STANDARD_CLASSES | ICC_BAR_CLASSES };
     InitCommonControlsEx(&ic);
     InitDark();
     InitIniPath();
@@ -664,6 +841,9 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmd, int show) {
     wc.lpfnWndProc = DlgProc; wc.lpszClassName = L"WHSettings";
     wc.hCursor = LoadCursorW(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.hIcon = MakeIcon();
+    RegisterClassW(&wc);
+
+    wc.lpfnWndProc = PrevProc; wc.lpszClassName = L"WHPreview"; wc.hIcon = NULL;
     RegisterClassW(&wc);
 
     hMain = CreateWindowExW(0, MAIN_CLASS, APP_NAME, WS_POPUP, 0, 0, 0, 0, NULL, NULL, hi, NULL);
