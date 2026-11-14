@@ -17,7 +17,7 @@ jobs:
       - name: Extract release notes
         shell: bash
         run: |
-          awk -v h="## $GITHUB_REF_NAME" '{sub(/$/,"")} $0==h{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
+          awk -v h="## $GITHUB_REF_NAME" '{sub(/\r$/,"")} $0==h{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
           grep -q '[^[:space:]]' notes.md || { echo "CHANGELOG.md has no section '## $GITHUB_REF_NAME'"; exit 1; }
       - name: Build
         shell: cmd
