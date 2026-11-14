@@ -531,7 +531,7 @@ static const WCHAR *const kPageNames[] = { L"Appearance", L"Timing", L"Behavior"
 #define ANIM_GAP_MS 700    // pause between preview loops on the Timing page
 
 static int g_dpi = 96;
-static HFONT g_font;
+static HFONT g_font, g_fontSm;
 static COLORREF dlgColor;
 static HWND hSwatch, hPrev;
 static COLORREF custColors[16];
@@ -706,13 +706,71 @@ static void SetPage(int p) {
     InvalidateRect(hDlg, &rc, FALSE);
 }
 
+// "Enabled" card at the top of the sidebar: master switch plus the toggle hotkey as a hint.
+#define NAV_Y0 68
+static RECT CardRect(void) { RECT r = { S(8), S(12), S(SIDE_W - 8), S(56) }; return r; }
+static int IsEnabledUI(void) { return IsDlgButtonChecked(hDlg, IDC_ENABLE) == BST_CHECKED; }
+static void InvalidateCard(void) { RECT r = CardRect(); InvalidateRect(hDlg, &r, FALSE); }
+
+// Keep the dialog in step when Enabled is flipped from the tray menu or the hotkey.
+static void SyncEnabledUI(void) {
+    if (!hDlg) return;
+    g_loading++;
+    CheckDlgButton(hDlg, IDC_ENABLE, cfg.enabled ? BST_CHECKED : BST_UNCHECKED);
+    g_loading--;
+    InvalidateCard();
+}
+
+static void HotkeyText(WORD hk, WCHAR *out) {
+    BYTE vk = LOBYTE(hk), mod = HIBYTE(hk);
+    out[0] = 0;
+    if (!vk) { lstrcpyW(out, L"No hotkey"); return; }
+    if (mod & HOTKEYF_CONTROL) lstrcatW(out, L"Ctrl+");
+    if (mod & HOTKEYF_ALT) lstrcatW(out, L"Alt+");
+    if (mod & HOTKEYF_SHIFT) lstrcatW(out, L"Shift+");
+    WCHAR k[32];
+    LONG lp = (LONG)(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) << 16) | ((mod & HOTKEYF_EXT) ? 1 << 24 : 0);
+    if (!GetKeyNameTextW(lp, k, 32)) wsprintfW(k, L"0x%02X", vk);
+    lstrcatW(out, k);
+}
+
+static void PaintEnabledCard(HDC dc) {
+    RECT c = CardRect();
+    int on = IsEnabledUI();
+    HBRUSH fill = CreateSolidBrush(C_EDIT()), tr = CreateSolidBrush(on ? C_ACCENT() : C_MUTED()), kn = CreateSolidBrush(g_dark && on ? RGB(20, 20, 20) : RGB(255, 255, 255));
+    HPEN pen = CreatePen(PS_SOLID, 1, g_dark ? RGB(70, 70, 70) : RGB(214, 214, 214));
+    HGDIOBJ ob = SelectObject(dc, fill), op = SelectObject(dc, pen);
+    RoundRect(dc, c.left, c.top, c.right, c.bottom, S(8), S(8));
+    SelectObject(dc, GetStockObject(NULL_PEN));
+    int sw = S(34), sh = S(18), sx = c.right - S(10) - sw, sy = (c.top + c.bottom - sh) / 2;
+    SelectObject(dc, tr);
+    RoundRect(dc, sx, sy, sx + sw + 1, sy + sh + 1, sh, sh);
+    int kd = sh - S(6), kx = on ? sx + sw - S(3) - kd : sx + S(3);
+    SelectObject(dc, kn);
+    Ellipse(dc, kx, sy + S(3), kx + kd + 1, sy + S(3) + kd + 1);
+    SelectObject(dc, ob); SelectObject(dc, op);
+    DeleteObject(fill); DeleteObject(tr); DeleteObject(kn); DeleteObject(pen);
+
+    WCHAR hk[64];
+    HotkeyText(LOWORD(SendDlgItemMessageW(hDlg, IDC_HOTKEY, HKM_GETHOTKEY, 0, 0)), hk);
+    RECT t = { c.left + S(12), c.top + S(5), sx - S(4), c.top + S(22) };
+    SetTextColor(dc, C_TEXT());
+    DrawTextW(dc, L"Enabled", -1, &t, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+    HGDIOBJ of = SelectObject(dc, g_fontSm);
+    RECT h = { c.left + S(12), c.top + S(22), c.right - S(4), c.bottom - S(5) };
+    SetTextColor(dc, C_MUTED());
+    DrawTextW(dc, hk, -1, &h, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
+    SelectObject(dc, of);
+}
+
 static void PaintSidebar(HDC dc) {
     RECT side = { 0, 0, S(SIDE_W), S(CLIENT_H) };
     FillRect(dc, &side, g_brSide);
     HGDIOBJ of = SelectObject(dc, g_font), op = SelectObject(dc, GetStockObject(NULL_PEN));
     SetBkMode(dc, TRANSPARENT);
+    PaintEnabledCard(dc);
     for (int i = 0; i < PG_COUNT; i++) {
-        RECT it = { S(8), S(16 + i * 40), S(SIDE_W - 8), S(16 + i * 40 + 34) };
+        RECT it = { S(8), S(NAV_Y0 + i * 40), S(SIDE_W - 8), S(NAV_Y0 + i * 40 + 34) };
         if (i == g_page) {
             HBRUSH b = CreateSolidBrush(C_SEL()), ab = CreateSolidBrush(C_ACCENT());
             HGDIOBJ ob = SelectObject(dc, b);
@@ -1143,11 +1201,13 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         SliderRow(L"Fade out", IDC_FADE, y);
 
         creatingPage = PG_BEHAVIOR; y = y0;
-        Mk(L"BUTTON", L"Highlight when window focus changes", BS_AUTOCHECKBOX | WS_TABSTOP, 0, CX, y, 380, 28, IDC_ENABLE); y += 36;
         Mk(L"BUTTON", L"Start with Windows", BS_AUTOCHECKBOX | WS_TABSTOP, 0, CX, y, 380, 28, IDC_STARTUP); y += 36;
         Label(L"Toggle hotkey", y);
         Mk(HOTKEY_CLASSW, L"", WS_TABSTOP, WS_EX_CLIENTEDGE, CTL_X, y + 1, 150, 26, IDC_HOTKEY);
         Mk(L"BUTTON", L"Clear", BS_PUSHBUTTON | WS_TABSTOP, 0, CTL_X + 160, y + 1, 56, 26, IDC_HKCLEAR);
+
+        creatingPage = 99;    // never shown: holds the Enabled state, which the sidebar card draws and toggles
+        Mk(L"BUTTON", L"Enabled", BS_AUTOCHECKBOX, 0, 0, 0, 10, 10, IDC_ENABLE);
 
         creatingPage = PG_IGNORE; y = y0;
         Mk(L"STATIC", L"Windows from these programs are never highlighted.", SS_LEFT, 0, CX, y, 400, 22, -1); y += 28;
@@ -1161,6 +1221,8 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
         g_font = CreateFontW(-MulDiv(9, g_dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
                              CLEARTYPE_QUALITY, 0, L"Segoe UI");
+        g_fontSm = CreateFontW(-MulDiv(8, g_dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                               CLEARTYPE_QUALITY, 0, L"Segoe UI");
         EnumChildWindows(h, SetFont, (LPARAM)g_font);
         PutDialog(&cfg);
         SetPage(PG_APPEAR);
@@ -1180,8 +1242,15 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_LBUTTONDOWN: {
         int x = (short)LOWORD(l), y = (short)HIWORD(l);
         if (x < S(SIDE_W)) {
-            int i = (y - S(16)) / S(40);
-            if (y >= S(16) && i >= 0 && i < PG_COUNT && i != g_page) SetPage(i);
+            RECT c = CardRect(); POINT pt = { x, y };
+            if (PtInRect(&c, pt)) {
+                CheckDlgButton(h, IDC_ENABLE, IsEnabledUI() ? BST_UNCHECKED : BST_CHECKED);
+                InvalidateCard();
+                LiveApply();
+                return 0;
+            }
+            int i = (y - S(NAV_Y0)) / S(40);
+            if (y >= S(NAV_Y0) && i >= 0 && i < PG_COUNT && i != g_page) SetPage(i);
         }
         return 0;
     }
@@ -1214,15 +1283,15 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (ChooseColorW(&cc)) { dlgColor = cc.rgbResult; InvalidateRect(hSwatch, NULL, TRUE); LiveApply(); }
             return 0;
         }
-        case IDC_HKCLEAR: SendDlgItemMessageW(h, IDC_HOTKEY, HKM_SETHOTKEY, 0, 0); LiveApply(); return 0;
-        case IDC_ENABLE: case IDC_STARTUP:
+        case IDC_HKCLEAR: SendDlgItemMessageW(h, IDC_HOTKEY, HKM_SETHOTKEY, 0, 0); InvalidateCard(); LiveApply(); return 0;
+        case IDC_STARTUP:
             if (HIWORD(w) == BN_CLICKED) LiveApply();
             return 0;
         case IDC_MODE:
             if (HIWORD(w) == CBN_SELCHANGE) { LiveApply(); ApplyLayout(); }
             return 0;
         case IDC_HOTKEY:
-            if (HIWORD(w) == EN_CHANGE) LiveApply();
+            if (HIWORD(w) == EN_CHANGE) { InvalidateCard(); LiveApply(); }
             return 0;
         case IDC_ADDPROG: AddIgnoreFromFile(); return 0;
         case IDC_ADDOPEN: AddIgnoreFromOpen((HWND)l); return 0;
@@ -1233,7 +1302,7 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_DESTROY:
         KillTimer(h, ANIM_TIMER); g_prevAlpha = 255;
         FlushSave();
-        DeleteObject(g_font); g_font = NULL; hDlg = NULL; hPrev = NULL;
+        DeleteObject(g_font); g_font = NULL; DeleteObject(g_fontSm); g_fontSm = NULL; hDlg = NULL; hPrev = NULL;
         return 0;
     }
     return DefWindowProcW(h, m, w, l);
@@ -1284,12 +1353,12 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (IsColorSetChange(l)) RefreshDark();
         break;
     case WM_HOTKEY:
-        cfg.enabled = !cfg.enabled; PI(L"Enabled", cfg.enabled); UpdateTip();
+        cfg.enabled = !cfg.enabled; PI(L"Enabled", cfg.enabled); UpdateTip(); SyncEnabledUI();
         if (!cfg.enabled) HideOverlay();
         return 0;
     case WM_COMMAND:
         switch (LOWORD(w)) {
-        case IDM_ENABLE: cfg.enabled = !cfg.enabled; PI(L"Enabled", cfg.enabled); UpdateTip();
+        case IDM_ENABLE: cfg.enabled = !cfg.enabled; PI(L"Enabled", cfg.enabled); UpdateTip(); SyncEnabledUI();
                          if (!cfg.enabled) HideOverlay();
                          break;
         case IDM_SETTINGS: OpenSettings(); break;

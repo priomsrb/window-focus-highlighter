@@ -51,7 +51,9 @@ There is no test suite. Verify by running the app and looking at it (see Testing
 - **Settings dialog** (`WHSettings`, one window, hand-built, no resource templates): custom-painted sidebar with four
   pages (Appearance, Timing, Behavior, Ignore list); a live preview panel (`WHPreview`) on top; custom-drawn sliders
   (`WHSlider`, replaces the stock trackbar, speaks `TBM_*` messages and sends `WM_HSCROLL`); an owner-drawn ignore
-  list with hover states and per-row remove. Controls are tagged with the page (`ctlPage`) and, on Appearance, a row
+  list with hover states and per-row remove. Above the sidebar pages sits an "Enabled" card (switch + toggle hotkey
+  hint) painted by `PaintEnabledCard`; its state lives in a hidden `IDC_ENABLE` checkbox so `ReadDialog`/`PutDialog`
+  still work, and `SyncEnabledUI` refreshes it when the tray menu or hotkey flips Enabled. Controls are tagged with the page (`ctlPage`) and, on Appearance, a row
   (`ctlRow`), so `ApplyLayout` can show/hide pages and collapse rows that don't apply to the chosen Style.
 - **Main window**: hidden top-level window (not message-only, it must receive `TaskbarCreated`). Single instance via
   a named mutex; a second launch posts `WM_OPEN` to the first, which opens the settings window.
