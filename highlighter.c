@@ -20,7 +20,7 @@
 enum { MODE_BORDER, MODE_TINT, MODE_BOTH };
 
 typedef struct {
-    int enabled, mode, opacity, tintOpacity, thickness, radius, holdMs, fadeMs;
+    int enabled, mode, opacity, tintOpacity, thickness, holdMs, fadeMs;
     COLORREF color;
     WORD hotkey;            // HKM_* format: LOBYTE = vk, HIBYTE = HOTKEYF_* flags
     WCHAR ignore[256];      // ';' separated exe names
@@ -34,7 +34,7 @@ typedef struct {
 enum { T_DEBOUNCE = 1, T_HOLD, T_FADE };
 enum { IDM_ENABLE = 1, IDM_SETTINGS, IDM_STARTUP, IDM_EXIT };
 enum { IDC_ENABLE = 101, IDC_MODE, IDC_SWATCH, IDC_PICK, IDC_OPACITY, IDC_TINT, IDC_THICK,
-       IDC_RADIUS, IDC_HOLD, IDC_FADE, IDC_HOTKEY, IDC_HKCLEAR, IDC_IGNORE, IDC_STARTUP,
+       IDC_HOLD, IDC_FADE, IDC_HOTKEY, IDC_HKCLEAR, IDC_IGNORE, IDC_STARTUP,
        IDC_PREVIEW };
 
 static HINSTANCE hInst;
@@ -53,7 +53,7 @@ static DWORD g_fadeStart;
 
 static void Defaults(Config *c) {
     c->enabled = 1; c->mode = MODE_BORDER; c->opacity = 90; c->tintOpacity = 20;
-    c->thickness = 4; c->radius = 8; c->holdMs = 350; c->fadeMs = 250;
+    c->thickness = 4; c->holdMs = 350; c->fadeMs = 250;
     c->color = RGB(51, 153, 255);
     c->hotkey = MAKEWORD('H', HOTKEYF_CONTROL | HOTKEYF_ALT);
     c->ignore[0] = 0;
@@ -67,7 +67,6 @@ static void Sanitize(Config *c) {
     c->opacity = Clampi(c->opacity, 1, 100);
     c->tintOpacity = Clampi(c->tintOpacity, 1, 100);
     c->thickness = Clampi(c->thickness, 1, 50);
-    c->radius = Clampi(c->radius, 0, 100);
     c->holdMs = Clampi(c->holdMs, 0, 10000);
     c->fadeMs = Clampi(c->fadeMs, 0, 5000);
 }
@@ -93,7 +92,6 @@ static void LoadConfig(void) {
     cfg.opacity = GI(L"Opacity", d.opacity);
     cfg.tintOpacity = GI(L"TintOpacity", d.tintOpacity);
     cfg.thickness = GI(L"Thickness", d.thickness);
-    cfg.radius = GI(L"Radius", d.radius);
     cfg.holdMs = GI(L"HoldMs", d.holdMs);
     cfg.fadeMs = GI(L"FadeMs", d.fadeMs);
     cfg.hotkey = (WORD)GI(L"Hotkey", d.hotkey);
@@ -107,7 +105,7 @@ static void LoadConfig(void) {
 
 static void SaveConfig(void) {
     PI(L"Enabled", cfg.enabled); PI(L"Mode", cfg.mode); PI(L"Opacity", cfg.opacity);
-    PI(L"TintOpacity", cfg.tintOpacity); PI(L"Thickness", cfg.thickness); PI(L"Radius", cfg.radius);
+    PI(L"TintOpacity", cfg.tintOpacity); PI(L"Thickness", cfg.thickness);
     PI(L"HoldMs", cfg.holdMs); PI(L"FadeMs", cfg.fadeMs); PI(L"Hotkey", cfg.hotkey);
     WCHAR b[16];
     wsprintfW(b, L"%02X%02X%02X", GetRValue(cfg.color), GetGValue(cfg.color), GetBValue(cfg.color));
@@ -188,6 +186,23 @@ static void HideOverlay(void) {
     if (g_mem) { SelectObject(g_mem, g_old); DeleteObject(g_bmp); DeleteDC(g_mem); g_mem = NULL; g_bmp = NULL; }
 }
 
+// Windows 11 rounds top-level window corners by 8 px (scaled with DPI); Windows 10 and
+// maximized/full-screen windows are square. Honors a per-window "no rounding" / "small rounding" preference.
+static int g_win11 = -1;
+static int WindowRadius(HWND w) {
+    if (g_win11 < 0) {
+        typedef LONG (WINAPI *RtlGetVersionFn)(OSVERSIONINFOW *);
+        RtlGetVersionFn fn = (RtlGetVersionFn)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
+        OSVERSIONINFOW vi = { sizeof vi };
+        g_win11 = fn && fn(&vi) == 0 && vi.dwBuildNumber >= 22000;
+    }
+    if (!g_win11) return 0;
+    int pref = 0;   // DWMWA_WINDOW_CORNER_PREFERENCE: 0 default, 1 none, 2 round, 3 small
+    DwmGetWindowAttribute(w, 33, &pref, sizeof pref);
+    int base = pref == 1 ? 0 : pref == 3 ? 4 : 8;
+    return MulDiv(base, GetDpiForWindow(w), 96);
+}
+
 static void ShowHighlight(HWND target, const Config *c) {
     RECT r;
     if (FAILED(DwmGetWindowAttribute(target, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof r)))
@@ -217,7 +232,7 @@ static void ShowHighlight(HWND target, const Config *c) {
     if (!g_bmp || !bits) { if (g_bmp) DeleteObject(g_bmp); DeleteDC(g_mem); g_mem = NULL; g_bmp = NULL; return; }
     g_old = SelectObject(g_mem, g_bmp);
 
-    float radius = full ? 0.f : (float)(c->radius + pad);
+    float radius = full ? 0.f : (float)(WindowRadius(target) + pad);
     Render((DWORD *)bits, w, h, c, radius);
 
     g_hold = c->holdMs; g_fade = c->fadeMs;
@@ -423,7 +438,7 @@ static void ReadDialog(Config *c) {
     c->mode = (int)SendDlgItemMessageW(hDlg, IDC_MODE, CB_GETCURSEL, 0, 0);
     c->color = dlgColor;
     c->opacity = GetNum(IDC_OPACITY); c->tintOpacity = GetNum(IDC_TINT);
-    c->thickness = GetNum(IDC_THICK); c->radius = GetNum(IDC_RADIUS);
+    c->thickness = GetNum(IDC_THICK);
     c->holdMs = GetNum(IDC_HOLD); c->fadeMs = GetNum(IDC_FADE);
     c->hotkey = LOWORD(SendDlgItemMessageW(hDlg, IDC_HOTKEY, HKM_GETHOTKEY, 0, 0));
     GetDlgItemTextW(hDlg, IDC_IGNORE, c->ignore, 256);
@@ -437,7 +452,7 @@ static void PutDialog(const Config *c) {
     SendDlgItemMessageW(hDlg, IDC_MODE, CB_SETCURSEL, c->mode, 0);
     dlgColor = c->color;
     SetDlgItemInt(hDlg, IDC_OPACITY, c->opacity, FALSE); SetDlgItemInt(hDlg, IDC_TINT, c->tintOpacity, FALSE);
-    SetDlgItemInt(hDlg, IDC_THICK, c->thickness, FALSE); SetDlgItemInt(hDlg, IDC_RADIUS, c->radius, FALSE);
+    SetDlgItemInt(hDlg, IDC_THICK, c->thickness, FALSE);
     SetDlgItemInt(hDlg, IDC_HOLD, c->holdMs, FALSE); SetDlgItemInt(hDlg, IDC_FADE, c->fadeMs, FALSE);
     SendDlgItemMessageW(hDlg, IDC_HOTKEY, HKM_SETHOTKEY, c->hotkey, 0);
     SetDlgItemTextW(hDlg, IDC_IGNORE, c->ignore);
@@ -475,7 +490,6 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         NumRow(L"Border opacity (%)", IDC_OPACITY, y); y += 30;
         NumRow(L"Tint opacity (%)", IDC_TINT, y); y += 30;
         NumRow(L"Border thickness (px)", IDC_THICK, y); y += 30;
-        NumRow(L"Corner radius (px)", IDC_RADIUS, y); y += 30;
         NumRow(L"Show duration (ms)", IDC_HOLD, y); y += 30;
         NumRow(L"Fade-out time (ms)", IDC_FADE, y); y += 30;
         Label(L"Toggle hotkey", y);
@@ -530,7 +544,7 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case IDC_MODE:
             if (HIWORD(w) == CBN_SELCHANGE) LiveApply();
             return 0;
-        case IDC_OPACITY: case IDC_TINT: case IDC_THICK: case IDC_RADIUS: case IDC_HOLD: case IDC_FADE:
+        case IDC_OPACITY: case IDC_TINT: case IDC_THICK: case IDC_HOLD: case IDC_FADE:
         case IDC_HOTKEY: case IDC_IGNORE:
             if (HIWORD(w) == EN_CHANGE) LiveApply();
             return 0;
