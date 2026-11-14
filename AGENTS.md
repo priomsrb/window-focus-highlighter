@@ -1,4 +1,4 @@
-# Window Highlighter: notes for agents
+# Window Focus Highlighter: notes for agents
 
 A tiny Windows tray app (plain C, Win32, ~50 KB exe). When focus moves to another window it flashes a border
 and/or tint around it, then fades out. Runs in the background, can start with Windows, has a settings window.
@@ -18,10 +18,10 @@ Priorities from the user: small, fast, efficient. Keep it dependency-free C. No 
 Needs MinGW-w64 (`gcc` and `windres`) on PATH. From Git Bash:
 
 ```bash
-taskkill //f //im WindowHighlighter.exe   # the running exe locks the file
+taskkill //f //im WindowFocusHighlighter.exe   # the running exe locks the file
 windres app.rc -O coff -o app_res.o
 gcc -Os -fno-math-errno -municode -mwindows -s -Wall -Wl,--gc-sections highlighter.c app_res.o \
-    -o WindowHighlighter.exe -lcomctl32 -lcomdlg32 -lshell32 -luser32 -lgdi32 -ladvapi32
+    -o WindowFocusHighlighter.exe -lcomctl32 -lcomdlg32 -lshell32 -luser32 -lgdi32 -ladvapi32
 ```
 
 Keep the build warning-free (`-Wall`). Add new link libs to `build.bat` too. `*.o` and `*.exe` are gitignored.
@@ -30,10 +30,10 @@ There is no test suite. Verify by running the app and looking at it (see Testing
 
 ## Architecture (in file order)
 
-- **Config**: `Config` struct, `LoadConfig` / `SaveConfig` against `%APPDATA%\WindowHighlighter\settings.ini`
+- **Config**: `Config` struct, `LoadConfig` / `SaveConfig` against `%APPDATA%\WindowFocusHighlighter\settings.ini`
   (`[Highlight]` keys: Enabled, Mode, Opacity, TintOpacity, Thickness, Softness, HoldMs, FadeMs, Hotkey, Color (hex RRGGBB),
   Ignore (`;` separated exe names)). `Sanitize` clamps everything. Corner radius is intentionally NOT a setting.
-- **Startup**: `HKCU\...\Run` value `WindowHighlighter`.
+- **Startup**: `HKCU\...\Run` value `WindowFocusHighlighter`.
 - **Rendering**: `Render()` fills a premultiplied-ARGB DIB using a rounded-rect signed distance function, anti-aliased.
   Handles border band, interior tint, and the edge-fade (`Softness`) profile. The same function draws the overlay,
   the tray icon, and the settings preview, so keep it general.

@@ -1,4 +1,4 @@
-// Window Highlighter: flashes a border/tint around the window that just got focus.
+// Window Focus Highlighter: flashes a border/tint around the window that just got focus.
 // Event driven (SetWinEventHook) - no polling; timers only run while the flash is visible.
 #ifndef UNICODE
 #define UNICODE
@@ -26,8 +26,8 @@ typedef struct {
     WCHAR ignore[1024];     // ';' separated exe names
 } Config;
 
-#define APP_NAME   L"Window Highlighter"
-#define MAIN_CLASS L"WindowHighlighterMain"
+#define APP_NAME   L"Window Focus Highlighter"
+#define MAIN_CLASS L"WindowFocusHighlighterMain"
 #define WM_TRAY    (WM_APP + 1)
 #define WM_OPEN    (WM_APP + 2)
 
@@ -101,7 +101,7 @@ static void SetTheme(HWND h, LPCWSTR app, LPCWSTR id) { if (pSetWindowTheme) pSe
 static void InitIniPath(void) {
     WCHAR dir[MAX_PATH];
     DWORD n = GetEnvironmentVariableW(L"APPDATA", dir, MAX_PATH);
-    if (n && n + 32 <= MAX_PATH) { lstrcatW(dir, L"\\WindowHighlighter"); CreateDirectoryW(dir, NULL); }
+    if (n && n + 32 <= MAX_PATH) { lstrcatW(dir, L"\\WindowFocusHighlighter"); CreateDirectoryW(dir, NULL); }
     else {   // no usable %APPDATA%: keep settings next to the exe
         n = GetModuleFileNameW(NULL, dir, MAX_PATH);
         WCHAR *s = n && n < MAX_PATH ? wcsrchr(dir, L'\\') : NULL;
@@ -150,7 +150,7 @@ static void SaveConfig(void) {
 static int IsStartup(void) {
     HKEY k; int r = 0;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_QUERY_VALUE, &k) == ERROR_SUCCESS) {
-        r = RegQueryValueExW(k, L"WindowHighlighter", NULL, NULL, NULL, NULL) == ERROR_SUCCESS;
+        r = RegQueryValueExW(k, L"WindowFocusHighlighter", NULL, NULL, NULL, NULL) == ERROR_SUCCESS;
         RegCloseKey(k);
     }
     return r;
@@ -164,8 +164,8 @@ static void SetStartup(int on) {
         DWORD n = GetModuleFileNameW(NULL, p + 1, MAX_PATH);
         if (!n || n >= MAX_PATH) { RegCloseKey(k); return; }   // failed or truncated: don't register a wrong path
         p[n + 1] = L'"'; p[n + 2] = 0;
-        RegSetValueExW(k, L"WindowHighlighter", 0, REG_SZ, (BYTE *)p, (n + 3) * sizeof(WCHAR));
-    } else RegDeleteValueW(k, L"WindowHighlighter");
+        RegSetValueExW(k, L"WindowFocusHighlighter", 0, REG_SZ, (BYTE *)p, (n + 3) * sizeof(WCHAR));
+    } else RegDeleteValueW(k, L"WindowFocusHighlighter");
     RegCloseKey(k);
 }
 
@@ -1306,7 +1306,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmd, int show) {
     hInst = hi;
     LoadSystemDlls();
-    HANDLE mtx = CreateMutexW(NULL, TRUE, L"WindowHighlighter.SingleInstance");
+    HANDLE mtx = CreateMutexW(NULL, TRUE, L"WindowFocusHighlighter.SingleInstance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND other = FindWindowW(MAIN_CLASS, NULL);
         if (other) PostMessageW(other, WM_OPEN, 0, 0);

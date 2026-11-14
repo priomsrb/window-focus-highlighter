@@ -1,4 +1,4 @@
-# Window Highlighter
+# Window Focus Highlighter
 
 A tiny Windows tray app that briefly highlights whichever window just received focus, then fades out.
 Never lose track of where your keyboard focus went again.
@@ -21,10 +21,10 @@ See [FEATURES.md](FEATURES.md) for the full list.
 
 ## Usage
 
-Run `WindowHighlighter.exe`. It lives in the system tray. Double-click the tray icon, or right-click it and
+Run `WindowFocusHighlighter.exe`. It lives in the system tray. Double-click the tray icon, or right-click it and
 choose **Settings**, to configure it. Launching the exe a second time also opens the settings window.
 
-Settings are stored in `%APPDATA%\WindowHighlighter\settings.ini`.
+Settings are stored in `%APPDATA%\WindowFocusHighlighter\settings.ini`.
 
 ## Building
 
@@ -34,7 +34,7 @@ Requires Windows 10 or later and [MinGW-w64](https://www.mingw-w64.org/) (`gcc` 
 build.bat
 ```
 
-This produces `WindowHighlighter.exe`. If it is already running, exit it from the tray first, since the running exe locks the file.
+This produces `WindowFocusHighlighter.exe`. If it is already running, exit it from the tray first, since the running exe locks the file.
 
 ## License
 

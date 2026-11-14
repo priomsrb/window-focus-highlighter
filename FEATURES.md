@@ -1,6 +1,6 @@
 # Features
 
-Window Highlighter is a small Windows tray app that briefly highlights whichever window just received focus.
+Window Focus Highlighter is a small Windows tray app that briefly highlights whichever window just received focus.
 
 ## Highlighting
 
@@ -35,7 +35,7 @@ Open from the tray icon (double-click, or right-click then Settings). All change
 - **Live preview**: a mock window at the top of the settings shows exactly how the highlight will look.
   Click it to flash the real highlight on the settings window.
 - Follows the system light/dark theme, including the title bar and tray menu.
-- Settings are stored in `%APPDATA%\WindowHighlighter\settings.ini`.
+- Settings are stored in `%APPDATA%\WindowFocusHighlighter\settings.ini`.
 
 ## Background app
 
