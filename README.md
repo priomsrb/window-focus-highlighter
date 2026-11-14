@@ -5,6 +5,8 @@ Never lose track of where your keyboard focus went again.
 
 About 50 KB, plain C with the Win32 API, no runtime or installer, and no polling.
 
+![A border flashes around Notepad when it gains focus, then fades out](images/demo.gif)
+
 ## Features
 
 - Three styles: **Border**, **Tint**, or **Border + tint**, with adjustable color, opacity, thickness and soft glow edge.
