@@ -688,16 +688,18 @@ static void PaintSlider(HWND h, HDC dc, const SliderState *st) {
     if (!bmp || !bits) { if (bmp) DeleteObject(bmp); DeleteDC(mem); return; }
     HGDIOBJ old = SelectObject(mem, bmp);
 
-    float k = g_dpi / 96.f, R = 9 * k, th = 4 * k, cy = hh * .5f;
-    float rin = (st->drag ? 4.f : st->hover ? 6.5f : 5.f) * k;
+    float k = g_dpi / 96.f, R = 8 * k, th = 4 * k, cy = hh * .5f;
     float x0, x1; SliderGeom(h, &x0, &x1);
     float tx = SliderThumbX(h, st);
     COLORREF bgc = C_BG(), accent = C_ACCENT();
     COLORREF track = g_dark ? RGB(118, 118, 118) : RGB(160, 160, 160);
-    COLORREF outer = g_dark ? RGB(66, 66, 66) : RGB(255, 255, 255);
-    COLORREF ring = g_dark ? RGB(104, 104, 104) : RGB(188, 188, 188);
+    // Single-circle thumb: hover brightens it, pressed dims it.
+    COLORREF thumb = st->drag ? RGB(GetRValue(accent) * 3 / 4, GetGValue(accent) * 3 / 4, GetBValue(accent) * 3 / 4)
+                   : st->hover ? RGB(GetRValue(accent) + (255 - GetRValue(accent)) / 3,
+                                     GetGValue(accent) + (255 - GetGValue(accent)) / 3,
+                                     GetBValue(accent) + (255 - GetBValue(accent)) / 3)
+                   : accent;
     DWORD bg = (GetRValue(bgc) << 16) | (GetGValue(bgc) << 8) | GetBValue(bgc);
-    int focus = GetFocus() == h;
     DWORD *px = bits;
 
     for (int y = 0; y < hh; y++) {
@@ -710,10 +712,7 @@ static void PaintSlider(HWND h, HDC dc, const SliderState *st) {
             c = Mix(c, track, Cov(d));
             if (pxx < tx) c = Mix(c, accent, Cov(d));
             float dist = sqrtf((pxx - tx) * (pxx - tx) + (py - cy) * (py - cy));
-            c = Mix(c, ring, Cov(dist - R));
-            c = Mix(c, outer, Cov(dist - (R - k)));
-            c = Mix(c, accent, Cov(dist - rin));
-            if (focus) c = Mix(c, accent, Cov(fabsf(dist - (R + 3 * k)) - .75f * k));
+            c = Mix(c, thumb, Cov(dist - R));
             px[y * w + x] = c;
         }
     }
