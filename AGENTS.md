@@ -1,6 +1,6 @@
 # Window Highlighter: notes for agents
 
-A tiny Windows tray app (plain C, Win32, ~40 KB exe). When focus moves to another window it flashes a border
+A tiny Windows tray app (plain C, Win32, ~50 KB exe). When focus moves to another window it flashes a border
 and/or tint around it, then fades out. Runs in the background, can start with Windows, has a settings window.
 
 Priorities from the user: small, fast, efficient. Keep it dependency-free C. No polling, no frameworks.

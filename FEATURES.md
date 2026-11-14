@@ -48,7 +48,7 @@ Open from the tray icon (double-click, or right-click then Settings). All change
 
 ## Small and efficient
 
-- One native executable, about 40 KB, written in plain C with the Win32 API. No runtime or installer needed.
+- One native executable, about 50 KB, written in plain C with the Win32 API. No runtime or installer needed.
 - Event driven: it waits for Windows to report a focus change instead of polling.
 - Timers and window-movement tracking only run while a highlight is visible.
 - Memory for the highlight is released as soon as it disappears.
