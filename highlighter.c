@@ -914,12 +914,25 @@ static void RemoveIgnore(int i) {
     IgnoreChanged();
 }
 
+static int g_igHover = -1, g_igHoverX;   // hovered row, and whether the pointer is over its remove button
+
 static LRESULT CALLBACK IgnoreListSub(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR ref) {
-    if (m == WM_LBUTTONDOWN) {
+    if (m == WM_MOUSEMOVE) {
+        RECT rc; GetClientRect(h, &rc);
+        LRESULT r = SendMessageW(h, LB_ITEMFROMPOINT, 0, l);
+        int idx = HIWORD(r) ? -1 : LOWORD(r), onX = idx >= 0 && (short)LOWORD(l) > rc.right - S(36);
+        if (g_igHover < 0 && idx >= 0) {
+            TRACKMOUSEEVENT t = { sizeof t, TME_LEAVE, h, 0 };
+            TrackMouseEvent(&t);
+        }
+        if (idx != g_igHover || onX != g_igHoverX) { g_igHover = idx; g_igHoverX = onX; InvalidateRect(h, NULL, FALSE); }
+    } else if (m == WM_MOUSELEAVE) {
+        g_igHover = -1; g_igHoverX = 0; InvalidateRect(h, NULL, FALSE);
+    } else if (m == WM_LBUTTONDOWN) {
         RECT rc; GetClientRect(h, &rc);
         LRESULT r = SendMessageW(h, LB_ITEMFROMPOINT, 0, l);
         int idx = LOWORD(r);
-        if (!HIWORD(r) && (short)LOWORD(l) > rc.right - S(36)) { RemoveIgnore(idx); return 0; }
+        if (!HIWORD(r) && (short)LOWORD(l) > rc.right - S(36)) { RemoveIgnore(idx); g_igHover = -1; return 0; }
     } else if (m == WM_KEYDOWN && w == VK_DELETE) {
         RemoveIgnore((int)SendMessageW(h, LB_GETCURSEL, 0, 0));
         return 0;
@@ -933,7 +946,10 @@ static void DrawIgnoreItem(const DRAWITEMSTRUCT *di) {
     WCHAR name[MAX_PATH];
     if (SendMessageW(di->hwndItem, LB_GETTEXT, di->itemID, (LPARAM)name) <= 0) return;
     int sel = (di->itemState & ODS_SELECTED) != 0;
-    HBRUSH bg = CreateSolidBrush(sel ? C_SEL() : C_EDIT());
+    int hov = (int)di->itemID == g_igHover;
+    COLORREF rowBg = sel ? C_SEL() : hov ? (g_dark ? RGB(54, 54, 54) : RGB(242, 242, 242)) : C_EDIT();
+    if (sel && hov) rowBg = g_dark ? RGB(66, 66, 66) : RGB(212, 212, 212);
+    HBRUSH bg = CreateSolidBrush(rowBg);
     FillRect(dc, &rc, bg); DeleteObject(bg);
     HBRUSH ln = CreateSolidBrush(g_dark ? RGB(58, 58, 58) : RGB(228, 228, 228));
     RECT sep = { rc.left, rc.bottom - 1, rc.right, rc.bottom };
@@ -957,7 +973,15 @@ static void DrawIgnoreItem(const DRAWITEMSTRUCT *di) {
     SelectObject(dc, of);
 
     int xr = rc.right - S(20), g = S(4);          // remove glyph
-    HPEN gp = CreatePen(PS_SOLID, g_dpi >= 144 ? 2 : 1, C_MUTED());
+    int xhot = hov && g_igHoverX;             // pointer over this row's remove button
+    if (xhot) {
+        HBRUSH xb = CreateSolidBrush(g_dark ? RGB(84, 84, 84) : RGB(205, 205, 205));
+        ob = SelectObject(dc, xb); op = SelectObject(dc, GetStockObject(NULL_PEN));
+        int hs = S(13);
+        RoundRect(dc, xr - hs, cy - hs, xr + hs + 1, cy + hs + 1, S(8), S(8));
+        SelectObject(dc, ob); SelectObject(dc, op); DeleteObject(xb);
+    }
+    HPEN gp = CreatePen(PS_SOLID, g_dpi >= 144 ? 2 : 1, xhot ? C_TEXT() : C_MUTED());
     op = SelectObject(dc, gp);
     MoveToEx(dc, xr - g, cy - g, NULL); LineTo(dc, xr + g + 1, cy + g + 1);
     MoveToEx(dc, xr + g, cy - g, NULL); LineTo(dc, xr - g - 1, cy + g + 1);
