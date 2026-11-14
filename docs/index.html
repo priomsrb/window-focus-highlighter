@@ -67,7 +67,8 @@ h2{font-size:1.6rem;margin:72px 0 20px;text-align:center;letter-spacing:-.01em}
 .tabs{text-align:center}
 .tabs input{position:absolute;opacity:0;pointer-events:none}
 .tabs label{display:inline-block;padding:7px 16px;margin:0 3px 14px;border-radius:99px;cursor:pointer;color:var(--mute);border:1px solid var(--line);font-size:.95rem}
-.tabs img{display:none;width:100%;max-width:680px;height:auto;border-radius:10px;box-shadow:0 10px 40px #0004;margin:0 auto}
+.tabs picture{display:none}
+.tabs img{display:block;width:100%;max-width:680px;height:auto;border-radius:10px;box-shadow:0 10px 40px #0004;margin:0 auto}
 #t1:checked~.p1,#t2:checked~.p2,#t3:checked~.p3{display:block}
 #t1:checked~label[for=t1],#t2:checked~label[for=t2],#t3:checked~label[for=t3]{background:var(--accent);border-color:var(--accent);color:#fff}
 #t1:focus-visible~label[for=t1],#t2:focus-visible~label[for=t2],#t3:focus-visible~label[for=t3]{outline:2px solid var(--fg);outline-offset:2px}
@@ -114,9 +115,9 @@ footer{margin:64px 0 40px;text-align:center;color:var(--mute);font-size:.9rem}
 <div class="tabs">
 <input type="radio" name="t" id="t1" checked><input type="radio" name="t" id="t2"><input type="radio" name="t" id="t3">
 <label for="t1">Appearance</label><label for="t2">Timing</label><label for="t3">Behavior</label>
-<img class="p1" src="img/appearance.png" width="1021" height="739" alt="Appearance settings: style, color, opacity, thickness and edge fade, with a live preview" loading="lazy">
-<img class="p2" src="img/timing.png" width="1021" height="739" alt="Timing settings: how long the highlight shows and how long it takes to fade" loading="lazy">
-<img class="p3" src="img/behavior.png" width="1021" height="739" alt="Behavior settings: enable, start with Windows and the toggle hotkey" loading="lazy">
+<picture class="p1"><source media="(prefers-color-scheme:dark)" srcset="img/appearance.png"><img src="img/appearance-light.png" width="1021" height="739" alt="Appearance settings: style, color, opacity, thickness and edge fade, with a live preview" loading="lazy"></picture>
+<picture class="p2"><source media="(prefers-color-scheme:dark)" srcset="img/timing.png"><img src="img/timing-light.png" width="1021" height="739" alt="Timing settings: how long the highlight shows and how long it takes to fade" loading="lazy"></picture>
+<picture class="p3"><source media="(prefers-color-scheme:dark)" srcset="img/behavior.png"><img src="img/behavior-light.png" width="1021" height="739" alt="Behavior settings: enable, start with Windows and the toggle hotkey" loading="lazy"></picture>
 </div>
 
 <div style="text-align:center;margin-top:48px"><a class="btn" href="https://github.com/priomsrb/window-focus-highlighter/releases/latest">Download</a> <a class="btn alt" href="https://github.com/priomsrb/window-focus-highlighter">GitHub</a></div>
