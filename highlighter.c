@@ -190,10 +190,21 @@ static void Render(DWORD *px, int w, int h, const Config *c, float r, int outsid
     }
 }
 
+static HWND g_target;                 // window the overlay is following
+static HWINEVENTHOOK g_locHook;       // location-change hook, installed only while the overlay is up
+static Config g_showCfg;              // config snapshot used for (re)rendering while visible
+static int g_ovW, g_ovH, g_alpha = 255;
+
+static void FreeBitmap(void) {
+    if (g_mem) { SelectObject(g_mem, g_old); DeleteObject(g_bmp); DeleteDC(g_mem); g_mem = NULL; g_bmp = NULL; }
+}
+
 static void HideOverlay(void) {
     KillTimer(hMain, T_HOLD); KillTimer(hMain, T_FADE);
+    if (g_locHook) { UnhookWinEvent(g_locHook); g_locHook = NULL; }
+    g_target = NULL;
     ShowWindow(hOverlay, SW_HIDE);
-    if (g_mem) { SelectObject(g_mem, g_old); DeleteObject(g_bmp); DeleteDC(g_mem); g_mem = NULL; g_bmp = NULL; }
+    FreeBitmap();
 }
 
 // Windows 11 rounds top-level window corners by 8 px (scaled with DPI); Windows 10 and
@@ -213,46 +224,75 @@ static int WindowRadius(HWND w) {
     return MulDiv(base, GetDpiForWindow(w), 96);
 }
 
-static void ShowHighlight(HWND target, const Config *c) {
-    RECT r;
-    if (FAILED(DwmGetWindowAttribute(target, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof r)))
-        GetWindowRect(target, &r);
-    int ww = r.right - r.left, wh = r.bottom - r.top;
-    if (ww < 8 || wh < 8) return;
-    HideOverlay();
+typedef struct { RECT r; int ww, wh, full, pad, ov; } Geom;
 
-    // Windowed: the border sits outside the window edge (overlay grows by `pad`).
-    // Maximized / full screen: no room outside, so the border stays inside.
+// Where the overlay goes for window t. Windowed: the border sits outside the window edge (overlay grows by
+// `pad`). Maximized / full screen: no room outside, so the border stays inside.
+static int GetGeom(HWND t, const Config *c, Geom *g) {
+    if (!IsWindow(t) || IsIconic(t)) return 0;
+    if (FAILED(DwmGetWindowAttribute(t, DWMWA_EXTENDED_FRAME_BOUNDS, &g->r, sizeof g->r))) GetWindowRect(t, &g->r);
+    g->ww = g->r.right - g->r.left; g->wh = g->r.bottom - g->r.top;
+    if (g->ww < 8 || g->wh < 8) return 0;
     MONITORINFO mi = { sizeof mi };
-    GetMonitorInfoW(MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST), &mi);
-    int full = IsZoomed(target) || (r.left <= mi.rcMonitor.left && r.top <= mi.rcMonitor.top &&
-                                    r.right >= mi.rcMonitor.right && r.bottom >= mi.rcMonitor.bottom);
-    int pad = (full || c->mode == MODE_TINT) ? 0 : c->thickness;
+    GetMonitorInfoW(MonitorFromWindow(t, MONITOR_DEFAULTTONEAREST), &mi);
+    g->full = IsZoomed(t) || (g->r.left <= mi.rcMonitor.left && g->r.top <= mi.rcMonitor.top &&
+                              g->r.right >= mi.rcMonitor.right && g->r.bottom >= mi.rcMonitor.bottom);
+    g->pad = (g->full || c->mode == MODE_TINT) ? 0 : c->thickness;
     // DWM draws a ~1px border line at the window edge; overlap it so no sliver shows between border and window.
-    int ov = pad ? MulDiv(2, GetDpiForWindow(target), 96) : 0;
-    int w = ww + 2 * pad, h = wh + 2 * pad;
+    g->ov = g->pad ? MulDiv(2, GetDpiForWindow(t), 96) : 0;
+    return 1;
+}
 
+// (Re)render and show the overlay for the window's current geometry. Leaves the timers alone.
+static void PresentOverlay(HWND target) {
+    Geom g;
+    if (!GetGeom(target, &g_showCfg, &g)) { HideOverlay(); return; }
+    int w = g.ww + 2 * g.pad, h = g.wh + 2 * g.pad;
+    FreeBitmap();
+
+    void *bits = NULL;
+    HDC scr = GetDC(NULL);
+    g_mem = CreateCompatibleDC(scr);
     BITMAPINFO bi = {0};
     bi.bmiHeader.biSize = sizeof bi.bmiHeader;
     bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h;
     bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
-    void *bits = NULL;
-    HDC scr = GetDC(NULL);
-    g_mem = CreateCompatibleDC(scr);
     g_bmp = CreateDIBSection(scr, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
     ReleaseDC(NULL, scr);
     if (!g_bmp || !bits) { if (g_bmp) DeleteObject(g_bmp); DeleteDC(g_mem); g_mem = NULL; g_bmp = NULL; return; }
     g_old = SelectObject(g_mem, g_bmp);
 
-    float radius = full ? 0.f : (float)(WindowRadius(target) + pad);
-    Render((DWORD *)bits, w, h, c, radius, pad > 0, c->thickness + ov);
+    float radius = g.full ? 0.f : (float)(WindowRadius(target) + g.pad);
+    Render((DWORD *)bits, w, h, &g_showCfg, radius, g.pad > 0, g_showCfg.thickness + g.ov);
 
-    g_hold = c->holdMs; g_fade = c->fadeMs;
-    SetWindowPos(hOverlay, HWND_TOPMOST, r.left - pad, r.top - pad, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    POINT dst = { r.left - pad, r.top - pad }, src = {0, 0};
+    g_ovW = w; g_ovH = h;
+    SetWindowPos(hOverlay, HWND_TOPMOST, g.r.left - g.pad, g.r.top - g.pad, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    POINT dst = { g.r.left - g.pad, g.r.top - g.pad }, src = {0, 0};
     SIZE sz = { w, h };
-    BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)g_alpha, AC_SRC_ALPHA };
     UpdateLayeredWindow(hOverlay, NULL, &dst, &sz, g_mem, &src, 0, &bf, ULW_ALPHA);
+}
+
+// The target moved or resized while the highlight is showing: follow it.
+static void CALLBACK LocEvt(HWINEVENTHOOK hk, DWORD ev, HWND hw, LONG o, LONG c, DWORD t, DWORD tm) {
+    if (hw != g_target || o != OBJID_WINDOW || !g_mem) return;
+    Geom g;
+    if (!GetGeom(hw, &g_showCfg, &g)) { HideOverlay(); return; }
+    if (g.ww + 2 * g.pad == g_ovW && g.wh + 2 * g.pad == g_ovH) {
+        POINT dst = { g.r.left - g.pad, g.r.top - g.pad };
+        UpdateLayeredWindow(hOverlay, NULL, &dst, NULL, NULL, NULL, 0, NULL, 0);
+    } else PresentOverlay(hw);
+}
+
+static void ShowHighlight(HWND target, const Config *c) {
+    HideOverlay();
+    g_showCfg = *c; g_target = target; g_alpha = 255;
+    g_hold = c->holdMs; g_fade = c->fadeMs;
+    PresentOverlay(target);
+    if (!g_mem) return;
+    DWORD pid, tid = GetWindowThreadProcessId(target, &pid);
+    g_locHook = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, NULL, LocEvt, pid, tid,
+                                WINEVENT_OUTOFCONTEXT);
     SetTimer(hMain, T_HOLD, g_hold < USER_TIMER_MINIMUM ? USER_TIMER_MINIMUM : g_hold, NULL);
 }
 
@@ -260,7 +300,8 @@ static void OnFade(void) {
     DWORD el = GetTickCount() - g_fadeStart;
     if (el >= (DWORD)g_fade) { HideOverlay(); return; }
     POINT src = {0, 0};
-    BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)(255 - 255 * el / g_fade), AC_SRC_ALPHA };
+    g_alpha = (int)(255 - 255 * el / g_fade);
+    BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)g_alpha, AC_SRC_ALPHA };
     UpdateLayeredWindow(hOverlay, NULL, NULL, NULL, g_mem, &src, 0, &bf, ULW_ALPHA);
 }
 
