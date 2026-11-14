@@ -34,7 +34,7 @@ enum { T_DEBOUNCE = 1, T_HOLD, T_FADE };
 enum { IDM_ENABLE = 1, IDM_SETTINGS, IDM_STARTUP, IDM_EXIT };
 enum { IDC_ENABLE = 101, IDC_MODE, IDC_SWATCH, IDC_PICK, IDC_OPACITY, IDC_TINT, IDC_THICK,
        IDC_RADIUS, IDC_HOLD, IDC_FADE, IDC_HOTKEY, IDC_HKCLEAR, IDC_IGNORE, IDC_STARTUP,
-       IDC_PREVIEW, IDC_APPLY };
+       IDC_PREVIEW };
 
 static HINSTANCE hInst;
 static HWND hMain, hOverlay, hDlg;
@@ -362,7 +362,9 @@ static void ReadDialog(Config *c) {
     Sanitize(c);
 }
 
+static int g_loading;
 static void PutDialog(const Config *c) {
+    g_loading = 1;
     CheckDlgButton(hDlg, IDC_ENABLE, c->enabled ? BST_CHECKED : BST_UNCHECKED);
     SendDlgItemMessageW(hDlg, IDC_MODE, CB_SETCURSEL, c->mode, 0);
     dlgColor = c->color;
@@ -373,15 +375,19 @@ static void PutDialog(const Config *c) {
     SetDlgItemTextW(hDlg, IDC_IGNORE, c->ignore);
     CheckDlgButton(hDlg, IDC_STARTUP, IsStartup() ? BST_CHECKED : BST_UNCHECKED);
     InvalidateRect(hSwatch, NULL, TRUE);
+    g_loading = 0;
 }
 
-static void ApplyDialog(void) {
+
+// Every control change takes effect immediately (no Apply button).
+static void LiveApply(void) {
+    if (g_loading) return;
     ReadDialog(&cfg);
     SaveConfig();
     SetStartup(IsDlgButtonChecked(hDlg, IDC_STARTUP) == BST_CHECKED);
     RegisterHotkey();
     UpdateTip();
-    PutDialog(&cfg);    // show clamped values
+    if (!cfg.enabled) HideOverlay();
 }
 
 static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -411,9 +417,7 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         Mk(L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE, 12, y, 330, 22, IDC_IGNORE); y += 30;
         Mk(L"BUTTON", L"Start with Windows", BS_AUTOCHECKBOX | WS_TABSTOP, 0, 12, y, 330, 22, IDC_STARTUP); y += 34;
         Mk(L"BUTTON", L"Preview", BS_PUSHBUTTON | WS_TABSTOP, 0, 12, y, 72, 26, IDC_PREVIEW);
-        Mk(L"BUTTON", L"OK", BS_DEFPUSHBUTTON | WS_TABSTOP, 0, 120, y, 66, 26, IDOK);
-        Mk(L"BUTTON", L"Cancel", BS_PUSHBUTTON | WS_TABSTOP, 0, 192, y, 66, 26, IDCANCEL);
-        Mk(L"BUTTON", L"Apply", BS_PUSHBUTTON | WS_TABSTOP, 0, 264, y, 78, 26, IDC_APPLY); y += 38;
+        Mk(L"BUTTON", L"Close", BS_DEFPUSHBUTTON | WS_TABSTOP, 0, 264, y, 78, 26, IDOK); y += 38;
 
         g_font = CreateFontW(-MulDiv(9, g_dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
                              CLEARTYPE_QUALITY, 0, L"Segoe UI");
@@ -437,14 +441,22 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         switch (LOWORD(w)) {
         case IDC_SWATCH: case IDC_PICK: {
             CHOOSECOLORW cc = { sizeof cc, h, NULL, dlgColor, custColors, CC_RGBINIT | CC_FULLOPEN };
-            if (ChooseColorW(&cc)) { dlgColor = cc.rgbResult; InvalidateRect(hSwatch, NULL, TRUE); }
+            if (ChooseColorW(&cc)) { dlgColor = cc.rgbResult; InvalidateRect(hSwatch, NULL, TRUE); LiveApply(); }
             return 0;
         }
-        case IDC_HKCLEAR: SendDlgItemMessageW(h, IDC_HOTKEY, HKM_SETHOTKEY, 0, 0); return 0;
+        case IDC_HKCLEAR: SendDlgItemMessageW(h, IDC_HOTKEY, HKM_SETHOTKEY, 0, 0); LiveApply(); return 0;
+        case IDC_ENABLE: case IDC_STARTUP:
+            if (HIWORD(w) == BN_CLICKED) LiveApply();
+            return 0;
+        case IDC_MODE:
+            if (HIWORD(w) == CBN_SELCHANGE) LiveApply();
+            return 0;
+        case IDC_OPACITY: case IDC_TINT: case IDC_THICK: case IDC_RADIUS: case IDC_HOLD: case IDC_FADE:
+        case IDC_HOTKEY: case IDC_IGNORE:
+            if (HIWORD(w) == EN_CHANGE) LiveApply();
+            return 0;
         case IDC_PREVIEW: { Config t = cfg; ReadDialog(&t); ShowHighlight(h, &t); return 0; }
-        case IDC_APPLY: ApplyDialog(); return 0;
-        case IDOK: ApplyDialog(); DestroyWindow(h); return 0;
-        case IDCANCEL: DestroyWindow(h); return 0;
+        case IDOK: case IDCANCEL: DestroyWindow(h); return 0;
         }
         break;
     case WM_CLOSE: DestroyWindow(h); return 0;
