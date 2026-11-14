@@ -303,11 +303,13 @@ static void PresentOverlay(HWND target) {
     Render((DWORD *)bits, w, h, &g_showCfg, radius, g.pad > 0, g_showCfg.thickness + g.ov);
 
     g_ovW = w; g_ovH = h;
-    SetWindowPos(hOverlay, HWND_TOPMOST, g.r.left - g.pad, g.r.top - g.pad, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    // Push the new bitmap (and position/size) before showing, so the previous highlight's stale surface
+    // never flashes at the new position.
     POINT dst = { g.r.left - g.pad, g.r.top - g.pad }, src = {0, 0};
     SIZE sz = { w, h };
     BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)g_alpha, AC_SRC_ALPHA };
     UpdateLayeredWindow(hOverlay, NULL, &dst, &sz, g_mem, &src, 0, &bf, ULW_ALPHA);
+    SetWindowPos(hOverlay, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
 // The target moved or resized while the highlight is showing: follow it.
