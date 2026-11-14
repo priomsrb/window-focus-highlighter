@@ -20,7 +20,7 @@
 enum { MODE_BORDER, MODE_TINT, MODE_BOTH };
 
 typedef struct {
-    int enabled, mode, opacity, tintOpacity, thickness, holdMs, fadeMs;
+    int enabled, mode, opacity, tintOpacity, thickness, softness, holdMs, fadeMs;
     COLORREF color;
     WORD hotkey;            // HKM_* format: LOBYTE = vk, HIBYTE = HOTKEYF_* flags
     WCHAR ignore[256];      // ';' separated exe names
@@ -33,7 +33,7 @@ typedef struct {
 
 enum { T_DEBOUNCE = 1, T_HOLD, T_FADE };
 enum { IDM_ENABLE = 1, IDM_SETTINGS, IDM_STARTUP, IDM_EXIT };
-enum { IDC_ENABLE = 101, IDC_MODE, IDC_SWATCH, IDC_PICK, IDC_OPACITY, IDC_TINT, IDC_THICK,
+enum { IDC_ENABLE = 101, IDC_MODE, IDC_SWATCH, IDC_PICK, IDC_OPACITY, IDC_TINT, IDC_THICK, IDC_SOFT,
        IDC_HOLD, IDC_FADE, IDC_HOTKEY, IDC_HKCLEAR, IDC_IGNORE, IDC_STARTUP,
        IDC_PREVIEW };
 
@@ -53,7 +53,7 @@ static DWORD g_fadeStart;
 
 static void Defaults(Config *c) {
     c->enabled = 1; c->mode = MODE_BORDER; c->opacity = 90; c->tintOpacity = 20;
-    c->thickness = 4; c->holdMs = 350; c->fadeMs = 250;
+    c->thickness = 4; c->softness = 50; c->holdMs = 350; c->fadeMs = 250;
     c->color = RGB(51, 153, 255);
     c->hotkey = MAKEWORD('H', HOTKEYF_CONTROL | HOTKEYF_ALT);
     c->ignore[0] = 0;
@@ -67,6 +67,7 @@ static void Sanitize(Config *c) {
     c->opacity = Clampi(c->opacity, 1, 100);
     c->tintOpacity = Clampi(c->tintOpacity, 1, 100);
     c->thickness = Clampi(c->thickness, 1, 50);
+    c->softness = Clampi(c->softness, 0, 100);
     c->holdMs = Clampi(c->holdMs, 0, 10000);
     c->fadeMs = Clampi(c->fadeMs, 0, 5000);
 }
@@ -92,6 +93,7 @@ static void LoadConfig(void) {
     cfg.opacity = GI(L"Opacity", d.opacity);
     cfg.tintOpacity = GI(L"TintOpacity", d.tintOpacity);
     cfg.thickness = GI(L"Thickness", d.thickness);
+    cfg.softness = GI(L"Softness", d.softness);
     cfg.holdMs = GI(L"HoldMs", d.holdMs);
     cfg.fadeMs = GI(L"FadeMs", d.fadeMs);
     cfg.hotkey = (WORD)GI(L"Hotkey", d.hotkey);
@@ -105,7 +107,7 @@ static void LoadConfig(void) {
 
 static void SaveConfig(void) {
     PI(L"Enabled", cfg.enabled); PI(L"Mode", cfg.mode); PI(L"Opacity", cfg.opacity);
-    PI(L"TintOpacity", cfg.tintOpacity); PI(L"Thickness", cfg.thickness);
+    PI(L"TintOpacity", cfg.tintOpacity); PI(L"Thickness", cfg.thickness); PI(L"Softness", cfg.softness);
     PI(L"HoldMs", cfg.holdMs); PI(L"FadeMs", cfg.fadeMs); PI(L"Hotkey", cfg.hotkey);
     WCHAR b[16];
     wsprintfW(b, L"%02X%02X%02X", GetRValue(cfg.color), GetGValue(cfg.color), GetBValue(cfg.color));
@@ -140,7 +142,9 @@ static void SetStartup(int on) {
 static float Sat(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
 // Fills premultiplied ARGB pixels: rounded-rect border band and/or interior tint.
-static void Render(DWORD *px, int w, int h, const Config *c, float r) {
+// `outside`: border band lies outside the window, so it fades toward its outer edge (a glow);
+// otherwise it fades toward the window interior.
+static void Render(DWORD *px, int w, int h, const Config *c, float r, int outside) {
     float t = (float)c->thickness;
     float Ab = (c->mode == MODE_TINT ? c->tintOpacity : c->opacity) / 100.f;
     float At = c->mode == MODE_BORDER ? 0.f : c->tintOpacity / 100.f;
@@ -155,6 +159,7 @@ static void Render(DWORD *px, int w, int h, const Config *c, float r) {
         int A = (int)(At * 255 + .5f);
         tintPx = (A << 24) | ((cr * A / 255) << 16) | ((cg * A / 255) << 8) | (cb * A / 255);
     }
+    float soft = c->mode == MODE_TINT ? 0.f : c->softness / 100.f;
     float inner = ex - t - 1;   // |px| below this (on inner rows) is pure interior
 
     for (int y = 0; y < h; y++) {
@@ -173,7 +178,12 @@ static void Render(DWORD *px, int w, int h, const Config *c, float r) {
             float mx = fmaxf(qx, 0.f), my = fmaxf(qy, 0.f);
             float d = sqrtf(mx * mx + my * my) + fminf(fmaxf(qx, qy), 0.f) - r;
             float co = Sat(.5f - d), ci = Sat(.5f - (d + t));
-            float a = co * (Ab * (1 - ci) + At * ci);
+            float f = 1.f;
+            if (soft > 0) {
+                float k = Sat(-d / t);                       // 0 at outer edge .. 1 at inner edge
+                f = Sat((outside ? k : 1 - k) / soft);
+            }
+            float a = co * (Ab * f * (1 - ci) + At * ci);
             int A = (int)(a * 255 + .5f);
             if (A) row[x] = (A << 24) | ((cr * A / 255) << 16) | ((cg * A / 255) << 8) | (cb * A / 255);
         }
@@ -233,7 +243,7 @@ static void ShowHighlight(HWND target, const Config *c) {
     g_old = SelectObject(g_mem, g_bmp);
 
     float radius = full ? 0.f : (float)(WindowRadius(target) + pad);
-    Render((DWORD *)bits, w, h, c, radius);
+    Render((DWORD *)bits, w, h, c, radius, pad > 0);
 
     g_hold = c->holdMs; g_fade = c->fadeMs;
     SetWindowPos(hOverlay, HWND_TOPMOST, r.left - pad, r.top - pad, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -312,7 +322,8 @@ static HICON MakeIcon(void) {
     ReleaseDC(NULL, scr);
     Config t; Defaults(&t);
     t.mode = MODE_BORDER; t.opacity = 100; t.thickness = s / 8 > 2 ? s / 8 : 2;
-    Render((DWORD *)bits, s, s, &t, s / 5.f);
+    t.softness = 0;
+    Render((DWORD *)bits, s, s, &t, s / 5.f, 0);
     DWORD *p = bits;                       // icons want straight (non-premultiplied) alpha
     for (int i = 0; i < s * s; i++) {
         DWORD a = p[i] >> 24;
@@ -438,7 +449,7 @@ static void ReadDialog(Config *c) {
     c->mode = (int)SendDlgItemMessageW(hDlg, IDC_MODE, CB_GETCURSEL, 0, 0);
     c->color = dlgColor;
     c->opacity = GetNum(IDC_OPACITY); c->tintOpacity = GetNum(IDC_TINT);
-    c->thickness = GetNum(IDC_THICK);
+    c->thickness = GetNum(IDC_THICK); c->softness = GetNum(IDC_SOFT);
     c->holdMs = GetNum(IDC_HOLD); c->fadeMs = GetNum(IDC_FADE);
     c->hotkey = LOWORD(SendDlgItemMessageW(hDlg, IDC_HOTKEY, HKM_GETHOTKEY, 0, 0));
     GetDlgItemTextW(hDlg, IDC_IGNORE, c->ignore, 256);
@@ -452,7 +463,7 @@ static void PutDialog(const Config *c) {
     SendDlgItemMessageW(hDlg, IDC_MODE, CB_SETCURSEL, c->mode, 0);
     dlgColor = c->color;
     SetDlgItemInt(hDlg, IDC_OPACITY, c->opacity, FALSE); SetDlgItemInt(hDlg, IDC_TINT, c->tintOpacity, FALSE);
-    SetDlgItemInt(hDlg, IDC_THICK, c->thickness, FALSE);
+    SetDlgItemInt(hDlg, IDC_THICK, c->thickness, FALSE); SetDlgItemInt(hDlg, IDC_SOFT, c->softness, FALSE);
     SetDlgItemInt(hDlg, IDC_HOLD, c->holdMs, FALSE); SetDlgItemInt(hDlg, IDC_FADE, c->fadeMs, FALSE);
     SendDlgItemMessageW(hDlg, IDC_HOTKEY, HKM_SETHOTKEY, c->hotkey, 0);
     SetDlgItemTextW(hDlg, IDC_IGNORE, c->ignore);
@@ -490,6 +501,7 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         NumRow(L"Border opacity (%)", IDC_OPACITY, y); y += 30;
         NumRow(L"Tint opacity (%)", IDC_TINT, y); y += 30;
         NumRow(L"Border thickness (px)", IDC_THICK, y); y += 30;
+        NumRow(L"Border fade (%)", IDC_SOFT, y); y += 30;
         NumRow(L"Show duration (ms)", IDC_HOLD, y); y += 30;
         NumRow(L"Fade-out time (ms)", IDC_FADE, y); y += 30;
         Label(L"Toggle hotkey", y);
@@ -544,7 +556,7 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case IDC_MODE:
             if (HIWORD(w) == CBN_SELCHANGE) LiveApply();
             return 0;
-        case IDC_OPACITY: case IDC_TINT: case IDC_THICK: case IDC_HOLD: case IDC_FADE:
+        case IDC_OPACITY: case IDC_TINT: case IDC_THICK: case IDC_SOFT: case IDC_HOLD: case IDC_FADE:
         case IDC_HOTKEY: case IDC_IGNORE:
             if (HIWORD(w) == EN_CHANGE) LiveApply();
             return 0;
