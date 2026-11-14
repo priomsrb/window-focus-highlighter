@@ -734,22 +734,56 @@ static void HotkeyText(WORD hk, WCHAR *out) {
     lstrcatW(out, k);
 }
 
+static int g_hoverCard;
+static HBITMAP NewDIB(HDC like, int w, int h, void **bits);
+
+static COLORREF Blend(COLORREF a, COLORREF b, int pct) {
+    return RGB(GetRValue(a) + (GetRValue(b) - GetRValue(a)) * pct / 100,
+               GetGValue(a) + (GetGValue(b) - GetGValue(a)) * pct / 100,
+               GetBValue(a) + (GetBValue(b) - GetBValue(a)) * pct / 100);
+}
+
+// Anti-aliased switch: a pill track and a round knob, coverage computed from signed distance per pixel.
+static void PaintSwitch(HDC dc, int x, int y, int w, int h, int on, int hover, COLORREF bg) {
+    void *bits = NULL;
+    HDC mem = CreateCompatibleDC(dc);
+    HBITMAP bmp = NewDIB(dc, w, h, &bits);
+    HGDIOBJ old = SelectObject(mem, bmp);
+    COLORREF track = on ? C_ACCENT() : C_MUTED();
+    if (hover) track = Blend(track, g_dark ? RGB(255, 255, 255) : RGB(0, 0, 0), 18);
+    COLORREF knob = g_dark && on ? RGB(20, 20, 20) : RGB(255, 255, 255);
+    float r = h / 2.0f, kr = r - S(3) + (hover ? S(1) * 0.75f : 0), kcx = on ? w - r : r;
+    for (int py = 0; py < h; py++) {
+        for (int px = 0; px < w; px++) {
+            float fx = px + 0.5f, fy = py + 0.5f;
+            float dx = fx < r ? fx - r : fx > w - r ? fx - (w - r) : 0, dy = fy - r;
+            float a = 0.5f - (sqrtf(dx * dx + dy * dy) - r);
+            float ka = 0.5f - (sqrtf((fx - kcx) * (fx - kcx) + dy * dy) - kr);
+            a = a < 0 ? 0 : a > 1 ? 1 : a; ka = ka < 0 ? 0 : ka > 1 ? 1 : ka;
+            float ch[3];
+            int bgc[3] = { GetRValue(bg), GetGValue(bg), GetBValue(bg) };
+            int tc[3] = { GetRValue(track), GetGValue(track), GetBValue(track) };
+            int kc[3] = { GetRValue(knob), GetGValue(knob), GetBValue(knob) };
+            for (int i = 0; i < 3; i++) ch[i] = (bgc[i] * (1 - a) + tc[i] * a) * (1 - ka) + kc[i] * ka;
+            ((DWORD *)bits)[py * w + px] = ((DWORD)(ch[0] + 0.5f) << 16) | ((DWORD)(ch[1] + 0.5f) << 8) | (DWORD)(ch[2] + 0.5f);
+        }
+    }
+    BitBlt(dc, x, y, w, h, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem);
+}
+
 static void PaintEnabledCard(HDC dc) {
     RECT c = CardRect();
     int on = IsEnabledUI();
-    HBRUSH fill = CreateSolidBrush(C_EDIT()), tr = CreateSolidBrush(on ? C_ACCENT() : C_MUTED()), kn = CreateSolidBrush(g_dark && on ? RGB(20, 20, 20) : RGB(255, 255, 255));
+    COLORREF cardBg = g_hoverCard ? (g_dark ? RGB(54, 54, 54) : RGB(242, 242, 242)) : C_EDIT();
+    HBRUSH fill = CreateSolidBrush(cardBg);
     HPEN pen = CreatePen(PS_SOLID, 1, g_dark ? RGB(70, 70, 70) : RGB(214, 214, 214));
     HGDIOBJ ob = SelectObject(dc, fill), op = SelectObject(dc, pen);
     RoundRect(dc, c.left, c.top, c.right, c.bottom, S(8), S(8));
-    SelectObject(dc, GetStockObject(NULL_PEN));
-    int sw = S(34), sh = S(18), sx = c.right - S(10) - sw, sy = (c.top + c.bottom - sh) / 2;
-    SelectObject(dc, tr);
-    RoundRect(dc, sx, sy, sx + sw + 1, sy + sh + 1, sh, sh);
-    int kd = sh - S(6), kx = on ? sx + sw - S(3) - kd : sx + S(3);
-    SelectObject(dc, kn);
-    Ellipse(dc, kx, sy + S(3), kx + kd + 1, sy + S(3) + kd + 1);
     SelectObject(dc, ob); SelectObject(dc, op);
-    DeleteObject(fill); DeleteObject(tr); DeleteObject(kn); DeleteObject(pen);
+    DeleteObject(fill); DeleteObject(pen);
+    int sw = S(34), sh = S(18), sx = c.right - S(10) - sw, sy = (c.top + c.bottom - sh) / 2;
+    PaintSwitch(dc, sx, sy, sw, sh, on, g_hoverCard, cardBg);
 
     WCHAR hk[64];
     HotkeyText(LOWORD(SendDlgItemMessageW(hDlg, IDC_HOTKEY, HKM_GETHOTKEY, 0, 0)), hk);
@@ -1254,6 +1288,21 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     }
+    case WM_MOUSEMOVE: {
+        RECT c = CardRect(); POINT pt = { (short)LOWORD(l), (short)HIWORD(l) };
+        int hot = PtInRect(&c, pt);
+        if (hot != g_hoverCard) {
+            g_hoverCard = hot; InvalidateCard();
+            if (hot) { TRACKMOUSEEVENT te = { sizeof te, TME_LEAVE, h, 0 }; TrackMouseEvent(&te); }
+        }
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        if (g_hoverCard) { g_hoverCard = 0; InvalidateCard(); }
+        return 0;
+    case WM_SETCURSOR:
+        if (g_hoverCard && LOWORD(l) == HTCLIENT) { SetCursor(LoadCursorW(NULL, IDC_HAND)); return TRUE; }
+        break;
     case WM_CTLCOLORSTATIC:
         if ((HWND)l == hSwatch) {
             SetDCBrushColor((HDC)w, dlgColor);
