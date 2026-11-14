@@ -449,14 +449,14 @@ static int g_page, g_loading, g_dirty;
 static int g_prevAlpha = 255;    // preview highlight opacity (animated on the Timing page)
 static DWORD g_animStart;
 static HWND ctl[64];
-static int ctlPage[64], nctl, creatingPage = -1;
+static int ctlPage[64], ctlRow[64], ctlDy[64], nctl, creatingPage = -1, curRow = -1, rowTop;   // rows: Appearance page only
 
 static int S(int v) { return MulDiv(v, g_dpi, 96); }
 
 static HWND Mk(LPCWSTR cls, LPCWSTR text, DWORD style, DWORD ex, int x, int y, int w, int h, int id) {
     HWND c = CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | style, S(x), S(y), S(w), S(h),
                              hDlg, (HMENU)(INT_PTR)id, hInst, NULL);
-    if (nctl < 64) { ctl[nctl] = c; ctlPage[nctl++] = creatingPage; }
+    if (nctl < 64) { ctl[nctl] = c; ctlPage[nctl] = creatingPage; ctlRow[nctl] = curRow; ctlDy[nctl++] = S(y - rowTop); }
     return c;
 }
 static void Label(LPCWSTR t, int y) { Mk(L"STATIC", t, SS_LEFT | SS_CENTERIMAGE, 0, CX, y, 106, 28, -1); }
@@ -553,12 +553,37 @@ static void AnimTick(void) {
     if (a != g_prevAlpha) { g_prevAlpha = a; if (hPrev) InvalidateRect(hPrev, NULL, FALSE); }
 }
 
+// Appearance rows: 0 style, 1 color, 2 border opacity, 3 tint opacity, 4 thickness, 5 edge fade.
+// Rows that don't apply to the selected style are hidden and the rest close up.
+#define APPEAR_ROWS 6
+#define APPEAR_Y0   160
+static int RowVisible(int r) {
+    int mode = (int)SendDlgItemMessageW(hDlg, IDC_MODE, CB_GETCURSEL, 0, 0);
+    if (r == 3) return mode != MODE_BORDER;
+    if (r >= 2) return mode != MODE_TINT;
+    return 1;
+}
+
+static void ApplyLayout(void) {
+    int top[APPEAR_ROWS], y = APPEAR_Y0;
+    for (int r = 0; r < APPEAR_ROWS; r++) { top[r] = y; if (RowVisible(r)) y += 36; }
+    for (int i = 0; i < nctl; i++) {
+        int show = (ctlPage[i] < 0 || ctlPage[i] == g_page) && (ctlRow[i] < 0 || RowVisible(ctlRow[i]));
+        if (ctlRow[i] >= 0) {
+            RECT rc; GetWindowRect(ctl[i], &rc);
+            MapWindowPoints(NULL, hDlg, (POINT *)&rc, 2);
+            SetWindowPos(ctl[i], NULL, rc.left, S(top[ctlRow[i]]) + ctlDy[i], 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        ShowWindow(ctl[i], show ? SW_SHOWNA : SW_HIDE);
+    }
+    RedrawWindow(hDlg, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+}
+
 static void SetPage(int p) {
     g_page = p;
     if (p == PG_TIMING) { g_animStart = GetTickCount(); SetTimer(hDlg, ANIM_TIMER, 16, NULL); }
     else { KillTimer(hDlg, ANIM_TIMER); if (g_prevAlpha != 255) { g_prevAlpha = 255; if (hPrev) InvalidateRect(hPrev, NULL, FALSE); } }
-    for (int i = 0; i < nctl; i++)
-        if (ctlPage[i] >= 0) ShowWindow(ctl[i], ctlPage[i] == p ? SW_SHOWNA : SW_HIDE);
+    ApplyLayout();
     RECT rc = { 0, 0, S(SIDE_W), S(CLIENT_H) };
     InvalidateRect(hDlg, &rc, FALSE);
 }
@@ -791,19 +816,21 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         hPrev = Mk(L"WHPreview", L"", 0, 0, CX, 16, CLIENT_W - CX - 16, 124, IDC_PBOX);
         int y0 = 160, y;
 
-        creatingPage = PG_APPEAR; y = y0;
+        creatingPage = PG_APPEAR; y = y0; curRow = 0; rowTop = y;
         Label(L"Style", y);
         HWND cb = Mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, 0, CTL_X, y + 2, 180, 120, IDC_MODE);
         SendMessageW(cb, CB_ADDSTRING, 0, (LPARAM)L"Border");
         SendMessageW(cb, CB_ADDSTRING, 0, (LPARAM)L"Tint");
         SendMessageW(cb, CB_ADDSTRING, 0, (LPARAM)L"Border + tint"); y += 36;
+        curRow = 1; rowTop = y;
         Label(L"Color", y);
         hSwatch = Mk(L"STATIC", L"", SS_NOTIFY | WS_BORDER, 0, CTL_X, y + 2, 44, 24, IDC_SWATCH);
         Mk(L"BUTTON", L"Choose...", BS_PUSHBUTTON | WS_TABSTOP, 0, CTL_X + 54, y + 1, 92, 26, IDC_PICK); y += 36;
-        SliderRow(L"Border opacity", IDC_OPACITY, y); y += 36;
-        SliderRow(L"Tint opacity", IDC_TINT, y); y += 36;
-        SliderRow(L"Thickness", IDC_THICK, y); y += 36;
-        SliderRow(L"Edge fade", IDC_SOFT, y);
+        curRow = 2; rowTop = y; SliderRow(L"Border opacity", IDC_OPACITY, y); y += 36;
+        curRow = 3; rowTop = y; SliderRow(L"Tint opacity", IDC_TINT, y); y += 36;
+        curRow = 4; rowTop = y; SliderRow(L"Thickness", IDC_THICK, y); y += 36;
+        curRow = 5; rowTop = y; SliderRow(L"Edge fade", IDC_SOFT, y);
+        curRow = -1;
 
         creatingPage = PG_TIMING; y = y0;
         SliderRow(L"Show for", IDC_HOLD, y); y += 36;
@@ -879,7 +906,7 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (HIWORD(w) == BN_CLICKED) LiveApply();
             return 0;
         case IDC_MODE:
-            if (HIWORD(w) == CBN_SELCHANGE) LiveApply();
+            if (HIWORD(w) == CBN_SELCHANGE) { LiveApply(); ApplyLayout(); }
             return 0;
         case IDC_HOTKEY: case IDC_IGNORE:
             if (HIWORD(w) == EN_CHANGE) LiveApply();
