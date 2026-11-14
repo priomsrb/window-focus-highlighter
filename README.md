@@ -44,7 +44,7 @@ The version lives in `version.h` (it feeds the exe's file properties and the tra
 ./release.sh 1.2.3
 ```
 
-This bumps `version.h`, commits, tags `v1.2.3` and pushes. The GitHub Actions workflow (`.github/workflows/release.yml`) then builds the exe and publishes a GitHub Release with the bare exe, a zip (exe, LICENSE, README), `SHA256SUMS.txt` and auto-generated notes.
+This bumps `version.h`, commits, tags `v1.2.3` and pushes. The GitHub Actions workflow (`.github/workflows/release.yml`) then builds the exe and publishes a GitHub Release with the bare exe, a zip (exe, LICENSE, README), `SHA256SUMS.txt` and notes taken from `CHANGELOG.md`. Add a `## vX.Y.Z` section there (committed) before running `release.sh`.
 
 ## License
 

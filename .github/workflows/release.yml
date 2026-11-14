@@ -14,6 +14,11 @@ jobs:
         run: |
           ver=$(sed -n 's/.*APP_VER_STR "\(.*\)".*/\1/p' version.h)
           [ "v$ver" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != version.h $ver"; exit 1; }
+      - name: Extract release notes
+        shell: bash
+        run: |
+          awk -v h="## $GITHUB_REF_NAME" '{sub(/$/,"")} $0==h{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
+          grep -q '[^[:space:]]' notes.md || { echo "CHANGELOG.md has no section '## $GITHUB_REF_NAME'"; exit 1; }
       - name: Build
         shell: cmd
         run: |
@@ -30,4 +35,4 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md
