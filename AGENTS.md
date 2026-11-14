@@ -15,10 +15,9 @@ Priorities from the user: small, fast, efficient. Keep it dependency-free C. No 
 
 ## Build and run
 
-MinGW-w64 lives at `C:\msys64\mingw64\bin` (not on PATH by default). From Git Bash:
+Needs MinGW-w64 (`gcc` and `windres`) on PATH. From Git Bash:
 
 ```bash
-export PATH=/c/msys64/mingw64/bin:$PATH
 taskkill //f //im WindowHighlighter.exe   # the running exe locks the file
 windres app.rc -O coff -o app_res.o
 gcc -Os -fno-math-errno -municode -mwindows -s -Wall -Wl,--gc-sections highlighter.c app_res.o \
