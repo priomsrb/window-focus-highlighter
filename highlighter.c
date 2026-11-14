@@ -13,6 +13,7 @@
 #include <shellapi.h>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <uxtheme.h>
 #include <math.h>
 #include <wchar.h>
 
@@ -327,6 +328,64 @@ static void RegisterHotkey(void) {
     RegisterHotKey(hMain, 1, mods, vk);
 }
 
+// ---------------------------------------------------------------- dark mode
+// Follows the system "app mode" setting. Uses undocumented uxtheme ordinals (same ones Explorer uses)
+// for dark popup menus; everything else is documented API plus WM_CTLCOLOR* painting.
+#define DARK_BG   RGB(32, 32, 32)
+#define DARK_EDIT RGB(45, 45, 45)
+#define DARK_TEXT RGB(240, 240, 240)
+static int g_dark;
+static HBRUSH g_brBg, g_brEdit;
+static int (WINAPI *pSetPreferredAppMode)(int);
+static BOOL (WINAPI *pAllowDarkModeForWindow)(HWND, BOOL);
+static void (WINAPI *pFlushMenuThemes)(void);
+
+static void RefreshDark(void) {
+    DWORD v = 1, n = sizeof v;
+    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                 L"AppsUseLightTheme", RRF_RT_REG_DWORD, NULL, &v, &n);
+    g_dark = v == 0;
+    if (pFlushMenuThemes) pFlushMenuThemes();
+}
+
+static void InitDark(void) {
+    HMODULE u = LoadLibraryW(L"uxtheme.dll");
+    if (u) {
+        pSetPreferredAppMode = (void *)GetProcAddress(u, MAKEINTRESOURCEA(135));
+        pAllowDarkModeForWindow = (void *)GetProcAddress(u, MAKEINTRESOURCEA(133));
+        pFlushMenuThemes = (void *)GetProcAddress(u, MAKEINTRESOURCEA(136));
+    }
+    if (pSetPreferredAppMode) pSetPreferredAppMode(1);   // AllowDark: menus follow the system
+    g_brBg = CreateSolidBrush(DARK_BG);
+    g_brEdit = CreateSolidBrush(DARK_EDIT);
+    RefreshDark();
+}
+
+static BOOL CALLBACK ThemeChild(HWND c, LPARAM l) {
+    WCHAR cls[32];
+    GetClassNameW(c, cls, 32);
+    LPCWSTR t = NULL;
+    if (g_dark) {
+        if (!lstrcmpiW(cls, L"Button")) t = L"DarkMode_Explorer";
+        else if (!lstrcmpiW(cls, L"Edit") || !lstrcmpiW(cls, L"ComboBox") || !lstrcmpiW(cls, HOTKEY_CLASSW))
+            t = L"DarkMode_CFD";
+    }
+    if (t || !lstrcmpiW(cls, L"Button") || !lstrcmpiW(cls, L"Edit") || !lstrcmpiW(cls, L"ComboBox"))
+        SetWindowTheme(c, t, NULL);
+    return TRUE;
+}
+
+static void ApplyDlgTheme(HWND h) {
+    BOOL d = g_dark;
+    DwmSetWindowAttribute(h, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &d, sizeof d);
+    if (pAllowDarkModeForWindow) pAllowDarkModeForWindow(h, d);
+    EnumChildWindows(h, ThemeChild, 0);
+    SetWindowPos(h, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    RedrawWindow(h, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
+}
+
+static int IsColorSetChange(LPARAM l) { return l && !lstrcmpW((LPCWSTR)l, L"ImmersiveColorSet"); }
+
 // ---------------------------------------------------------------- settings dialog
 static int g_dpi = 96;
 static HFONT g_font;
@@ -423,6 +482,7 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                              CLEARTYPE_QUALITY, 0, L"Segoe UI");
         EnumChildWindows(h, SetFont, (LPARAM)g_font);
         PutDialog(&cfg);
+        ApplyDlgTheme(h);
 
         RECT rc = { 0, 0, S(354), S(y) };
         AdjustWindowRectExForDpi(&rc, WS_CAPTION | WS_SYSMENU, FALSE, 0, g_dpi);
@@ -436,6 +496,16 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             SetDCBrushColor((HDC)w, dlgColor);
             return (LRESULT)GetStockObject(DC_BRUSH);
         }
+        if (g_dark) { SetTextColor((HDC)w, DARK_TEXT); SetBkColor((HDC)w, DARK_BG); return (LRESULT)g_brBg; }
+        break;
+    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
+        if (g_dark) { SetTextColor((HDC)w, DARK_TEXT); SetBkColor((HDC)w, DARK_EDIT); return (LRESULT)g_brEdit; }
+        break;
+    case WM_ERASEBKGND:
+        if (g_dark) { RECT rc; GetClientRect(h, &rc); FillRect((HDC)w, &rc, g_brBg); return 1; }
+        break;
+    case WM_SETTINGCHANGE:
+        if (IsColorSetChange(l)) { RefreshDark(); ApplyDlgTheme(h); }
         break;
     case WM_COMMAND:
         switch (LOWORD(w)) {
@@ -507,6 +577,9 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         else if (l == WM_LBUTTONDBLCLK) OpenSettings();
         return 0;
     case WM_OPEN: OpenSettings(); return 0;
+    case WM_SETTINGCHANGE:
+        if (IsColorSetChange(l)) RefreshDark();
+        break;
     case WM_HOTKEY:
         cfg.enabled = !cfg.enabled; PI(L"Enabled", cfg.enabled); UpdateTip();
         if (!cfg.enabled) HideOverlay();
@@ -539,6 +612,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmd, int show) {
     }
     INITCOMMONCONTROLSEX ic = { sizeof ic, ICC_HOTKEY_CLASS | ICC_STANDARD_CLASSES };
     InitCommonControlsEx(&ic);
+    InitDark();
     InitIniPath();
     int first = GetFileAttributesW(iniPath) == INVALID_FILE_ATTRIBUTES;
     LoadConfig();
