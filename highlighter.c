@@ -437,6 +437,8 @@ static const WCHAR *const kPageNames[] = { L"Appearance", L"Timing", L"Behavior"
 #define CX       164     // content left edge
 #define CTL_X    276     // control column
 #define SAVE_TIMER 1
+#define ANIM_TIMER 2
+#define ANIM_GAP_MS 700    // pause between preview loops on the Timing page
 
 static int g_dpi = 96;
 static HFONT g_font;
@@ -444,6 +446,8 @@ static COLORREF dlgColor;
 static HWND hSwatch, hPrev;
 static COLORREF custColors[16];
 static int g_page, g_loading, g_dirty;
+static int g_prevAlpha = 255;    // preview highlight opacity (animated on the Timing page)
+static DWORD g_animStart;
 static HWND ctl[64];
 static int ctlPage[64], nctl, creatingPage = -1;
 
@@ -540,8 +544,19 @@ static void LiveApply(void) {
     SetTimer(hDlg, SAVE_TIMER, 250, NULL);
 }
 
+// Timing page: loop show -> fade -> pause using the configured durations.
+static void AnimTick(void) {
+    DWORD cycle = (DWORD)(cfg.holdMs + cfg.fadeMs + ANIM_GAP_MS);
+    DWORD t = (GetTickCount() - g_animStart) % cycle;
+    int a = t < (DWORD)cfg.holdMs ? 255
+          : t < (DWORD)(cfg.holdMs + cfg.fadeMs) ? (int)(255 - 255 * (t - cfg.holdMs) / cfg.fadeMs) : 0;
+    if (a != g_prevAlpha) { g_prevAlpha = a; if (hPrev) InvalidateRect(hPrev, NULL, FALSE); }
+}
+
 static void SetPage(int p) {
     g_page = p;
+    if (p == PG_TIMING) { g_animStart = GetTickCount(); SetTimer(hDlg, ANIM_TIMER, 16, NULL); }
+    else { KillTimer(hDlg, ANIM_TIMER); if (g_prevAlpha != 255) { g_prevAlpha = 255; if (hPrev) InvalidateRect(hPrev, NULL, FALSE); } }
     for (int i = 0; i < nctl; i++)
         if (ctlPage[i] >= 0) ShowWindow(ctl[i], ctlPage[i] == p ? SW_SHOWNA : SW_HIDE);
     RECT rc = { 0, 0, S(SIDE_W), S(CLIENT_H) };
@@ -614,7 +629,7 @@ static void PaintPreview(HWND h, HDC dc) {
     if (hb && hbits) {
         HGDIOBJ ho = SelectObject(hm, hb);
         Render((DWORD *)hbits, hw, hh, &cfg, (float)(rad + pad), pad > 0, cfg.thickness + ov);
-        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+        BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)g_prevAlpha, AC_SRC_ALPHA };
         AlphaBlend(mem, x - pad, y - pad, hw, hh, hm, 0, 0, hw, hh, bf);
         SelectObject(hm, ho);
     }
@@ -718,6 +733,7 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         break;
     case WM_TIMER:
         if (w == SAVE_TIMER) FlushSave();
+        else if (w == ANIM_TIMER) AnimTick();
         return 0;
     case WM_HSCROLL:
         UpdateValueLabel(GetDlgCtrlID((HWND)l));
@@ -745,6 +761,7 @@ static LRESULT CALLBACK DlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         break;
     case WM_CLOSE: DestroyWindow(h); return 0;
     case WM_DESTROY:
+        KillTimer(h, ANIM_TIMER); g_prevAlpha = 255;
         FlushSave();
         DeleteObject(g_font); g_font = NULL; hDlg = NULL; hPrev = NULL;
         return 0;
